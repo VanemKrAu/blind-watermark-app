@@ -1,0 +1,27 @@
+{
+  "buildFiles": [
+    "/Users/jacky-mac/develop/blind_watermark_demo/flutter_blind_watermark/android/src/main/cpp/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/Users/jacky-mac/Library/Android/sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/Users/jacky-mac/develop/blind_watermark_demo/flutter_blind_watermark/android/.cxx/Debug/152e3i62/x86_64",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/Users/jacky-mac/Library/Android/sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/Users/jacky-mac/develop/blind_watermark_demo/flutter_blind_watermark/android/.cxx/Debug/152e3i62/x86_64",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "flutter_blind_watermark::@6890427a1f51a3e7e1df": {
+      "artifactName": "flutter_blind_watermark",
+      "abi": "x86_64",
+      "output": "/Users/jacky-mac/develop/blind_watermark_demo/flutter_blind_watermark/example/build/flutter_blind_watermark/intermediates/cxx/Debug/152e3i62/obj/x86_64/libflutter_blind_watermark.so",
+      "runtimeFiles": []
+    }
+  }
+}
