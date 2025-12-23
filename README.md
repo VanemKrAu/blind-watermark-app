@@ -182,7 +182,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Credits
 
-- Algorithm based on DWT-DCT-SVD blind watermarking technique
+- Algorithm inspired by [blind_watermark](https://github.com/guofei9987/blind_watermark) by guofei9987
 - Uses [Eigen](https://eigen.tuxfamily.org/) library for matrix operations
 - Uses [stb_image](https://github.com/nothings/stb) for image I/O
 
