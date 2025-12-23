@@ -1,9 +1,15 @@
 name: flutter_blind_watermark
 description: A Flutter plugin for embedding and extracting invisible watermarks using DWT-DCT-SVD algorithm. Watermarks survive compression, cropping, and other attacks.
-version: 0.0.1
+version: 0.0.2
 homepage: https://github.com/JackCaow/flutter_blind_watermark
 repository: https://github.com/JackCaow/flutter_blind_watermark
 issue_tracker: https://github.com/JackCaow/flutter_blind_watermark/issues
+topics:
+  - watermark
+  - image-processing
+  - steganography
+  - ffi
+  - security
 
 environment:
   sdk: ^3.5.0

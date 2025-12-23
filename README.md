@@ -28,7 +28,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  flutter_blind_watermark: ^0.0.1
+  flutter_blind_watermark: ^0.0.2
 ```
 
 Then run:
