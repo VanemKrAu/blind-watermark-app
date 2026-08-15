@@ -28,26 +28,35 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
-                try {
-                    when (call.method) {
-                        "embed" -> {
-                            val img = call.argument<ByteArray>("img")!!
-                            val bits = call.argument<List<Double>>("bits")!!
-                            result.success(embed(img, bits))
+                // Heavy ONNX inference must never run on the platform (UI)
+                // thread — it would block rendering and risk an ANR.
+                val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+                executor.execute {
+                    try {
+                        when (call.method) {
+                            "embed" -> {
+                                val img = call.argument<ByteArray>("img")!!
+                                val bits = call.argument<List<Double>>("bits")!!
+                                runOnUiThread { result.success(embed(img, bits)) }
+                            }
+                            "extract" -> {
+                                val img = call.argument<ByteArray>("img")!!
+                                runOnUiThread { result.success(extract(img)) }
+                            }
+                            "modelReady" -> runOnUiThread { result.success(modelReady()) }
+                            "reloadModels" -> {
+                                reloadModels()
+                                runOnUiThread { result.success(modelReady()) }
+                            }
+                            else -> runOnUiThread { result.notImplemented() }
                         }
-                        "extract" -> {
-                            val img = call.argument<ByteArray>("img")!!
-                            result.success(extract(img))
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            result.error("WAM_ERROR", e.message ?: "unknown", null)
                         }
-                        "modelReady" -> result.success(modelReady())
-                        "reloadModels" -> {
-                            reloadModels()
-                            result.success(modelReady())
-                        }
-                        else -> result.notImplemented()
+                    } finally {
+                        executor.shutdown()
                     }
-                } catch (e: Exception) {
-                    result.error("WAM_ERROR", e.message ?: "unknown", null)
                 }
             }
     }
@@ -174,27 +183,30 @@ class MainActivity : FlutterActivity() {
         val env = getEnv()
         val sess = getEmbedSession()
         val msg = FloatArray(32) { if (bits.getOrElse(it) { 0.0 } > 0.5) 1f else 0f }
-        val imgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(tensor),
-            longArrayOf(1, 3, IMG_SIZE.toLong(), IMG_SIZE.toLong()))
-        val msgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(msg), longArrayOf(1, 32))
-        val out = sess.run(mapOf("img" to imgTensor, "msg" to msgTensor))
-        val flat = flattenFloats(out.get(0).value)
-        imgTensor.close()
-        msgTensor.close()
-        out.close()
-        // flat is [1,3,256,256] in C order -> channels are contiguous blocks of 256*256
-        val hw = IMG_SIZE * IMG_SIZE
-        val ch0 = flat.copyOfRange(0, hw)
-        val ch1 = flat.copyOfRange(hw, 2 * hw)
-        val ch2 = flat.copyOfRange(2 * hw, 3 * hw)
-        val wm = FloatArray(3 * hw)
-        System.arraycopy(ch0, 0, wm, 0, hw)
-        System.arraycopy(ch1, 0, wm, hw, hw)
-        System.arraycopy(ch2, 0, wm, 2 * hw, hw)
-        val outBmp = fromTensor(wm)
-        val bos = ByteArrayOutputStream()
-        outBmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
-        return bos.toByteArray()
+        var imgTensor: OnnxTensor? = null
+        var msgTensor: OnnxTensor? = null
+        var out: OrtSession.Result? = null
+        try {
+            imgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(tensor),
+                longArrayOf(1, 3, IMG_SIZE.toLong(), IMG_SIZE.toLong()))
+            msgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(msg), longArrayOf(1, 32))
+            out = sess.run(mapOf("img" to imgTensor, "msg" to msgTensor))
+            val flat = flattenFloats(out.get(0).value)
+            // flat is [1,3,256,256] in C order -> channels are contiguous blocks
+            val hw = IMG_SIZE * IMG_SIZE
+            val wm = FloatArray(3 * hw)
+            System.arraycopy(flat, 0, wm, 0, hw)
+            System.arraycopy(flat, hw, wm, hw, hw)
+            System.arraycopy(flat, 2 * hw, wm, 2 * hw, hw)
+            val outBmp = fromTensor(wm)
+            val bos = ByteArrayOutputStream()
+            outBmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
+            return bos.toByteArray()
+        } finally {
+            imgTensor?.close()
+            msgTensor?.close()
+            out?.close()
+        }
     }
 
     private fun extract(imgBytes: ByteArray): List<Int> {
@@ -202,36 +214,41 @@ class MainActivity : FlutterActivity() {
         val tensor = toTensor(bmp)
         val env = getEnv()
         val sess = getExtractSession()
-        val imgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(tensor),
-            longArrayOf(1, 3, IMG_SIZE.toLong(), IMG_SIZE.toLong()))
-        val out = sess.run(mapOf("img" to imgTensor))
-        val flat = flattenFloats(out.get(0).value)
-        imgTensor.close()
-        out.close()
-        // flat is [1,33,256,256] C order: channel k occupies [k*hw, (k+1)*hw)
-        val hw = IMG_SIZE * IMG_SIZE
-        val maskRaw = FloatArray(hw)
-        System.arraycopy(flat, 0, maskRaw, 0, hw)
-        val maskSel = BooleanArray(hw)
-        var cnt = 0
-        for (i in 0 until hw) {
-            maskSel[i] = 1f / (1f + Math.exp(-maskRaw[i].toDouble())) > 0.5
-            if (maskSel[i]) cnt++
-        }
-        val result = ArrayList<Int>(32)
-        for (k in 1..32) {
-            val off = k * hw
-            var sum = 0.0
-            var n = 0
+        var imgTensor: OnnxTensor? = null
+        var out: OrtSession.Result? = null
+        try {
+            imgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(tensor),
+                longArrayOf(1, 3, IMG_SIZE.toLong(), IMG_SIZE.toLong()))
+            out = sess.run(mapOf("img" to imgTensor))
+            val flat = flattenFloats(out.get(0).value)
+            // flat is [1,33,256,256] C order: channel k occupies [k*hw, (k+1)*hw)
+            val hw = IMG_SIZE * IMG_SIZE
+            val maskRaw = FloatArray(hw)
+            System.arraycopy(flat, 0, maskRaw, 0, hw)
+            val maskSel = BooleanArray(hw)
+            var cnt = 0
             for (i in 0 until hw) {
-                if (maskSel[i]) {
-                    sum += flat[off + i]
-                    n++
-                }
+                maskSel[i] = 1f / (1f + Math.exp(-maskRaw[i].toDouble())) > 0.5
+                if (maskSel[i]) cnt++
             }
-            result.add(if (n > 0 && sum / n > 0.0) 1 else 0)
+            val result = ArrayList<Int>(32)
+            for (k in 1..32) {
+                val off = k * hw
+                var sum = 0.0
+                var n = 0
+                for (i in 0 until hw) {
+                    if (maskSel[i]) {
+                        sum += flat[off + i]
+                        n++
+                    }
+                }
+                result.add(if (n > 0 && sum / n > 0.0) 1 else 0)
+            }
+            return result
+        } finally {
+            imgTensor?.close()
+            out?.close()
         }
-        return result
     }
 
     override fun onDestroy() {

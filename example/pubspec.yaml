@@ -40,5 +40,10 @@ flutter:
 
   assets:
     - assets/
+    - assets/onnx/wam_embedder.onnx
+    - assets/onnx/wam_extractor_int8.onnx
+
+
+
 
 

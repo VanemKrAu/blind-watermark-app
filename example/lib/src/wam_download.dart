@@ -35,35 +35,40 @@ Future<bool> ensureWamModels(BuildContext context) async {
   // Download with progress.
   if (!context.mounted) return false;
   var progress = 0.0;
+  void Function(int, int) onProgress = (int a, int b) {};
   await showDialog<bool>(
     context: context,
     barrierDismissible: false,
     builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setState) => AlertDialog(
-        title: const Text('正在下载模型…'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            LinearProgressIndicator(value: progress == 0 ? null : progress),
-            const SizedBox(height: 12),
-            Text('${(progress * 100).toStringAsFixed(0)}%'),
-            const SizedBox(height: 4),
-            const Text(
-              '下载完成后自动就绪，无需重启',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
-        ),
-      ),
+      builder: (ctx, setDialogState) {
+        onProgress = (done, total) {
+          if (total > 0) {
+            progress = done / total;
+            setDialogState(() {});
+          }
+        };
+        return AlertDialog(
+          title: const Text('正在下载模型…'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(value: progress == 0 ? null : progress),
+              const SizedBox(height: 12),
+              Text('${(progress * 100).toStringAsFixed(0)}%'),
+              const SizedBox(height: 4),
+              const Text(
+                '下载完成后自动就绪，无需重启',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        );
+      },
     ),
   );
 
   try {
-    await WamBridge.downloadModels((done, total) {
-      if (total > 0) {
-        progress = done / total;
-      }
-    });
+    await WamBridge.downloadModels(onProgress);
   } catch (e) {
     if (context.mounted) {
       Navigator.pop(context);

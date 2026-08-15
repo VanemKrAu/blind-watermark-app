@@ -39,19 +39,25 @@ class WamBridge {
   }
 
   /// Downloads both models with progress reporting.
-  /// [onProgress] receives (downloadedBytes, totalBytes) per file.
+  /// [onProgress] receives (downloadedBytes, totalBytes) where totalBytes is
+  /// the combined size of both files (progress never jumps back).
   static Future<void> downloadModels(
       void Function(int done, int total) onProgress) async {
     final dir = await _modelDir();
+    final embedderSize = WamConfig.embedderSizeMb * 1024 * 1024;
+    final extractorSize = WamConfig.extractorSizeMb * 1024 * 1024;
+    final total = embedderSize + extractorSize;
+    var done = 0;
     await _downloadFile(
       WamConfig.embedderUrl(),
       '${dir.path}/${WamConfig.embedderFile}',
-      onProgress,
+      (d, t) => onProgress(done + d, total),
     );
+    done += embedderSize;
     await _downloadFile(
       WamConfig.extractorUrl(),
       '${dir.path}/${WamConfig.extractorFile}',
-      onProgress,
+      (d, t) => onProgress(done + d, total),
     );
     await reloadModels();
   }
@@ -61,8 +67,13 @@ class WamBridge {
     String dest,
     void Function(int done, int total) onProgress,
   ) async {
+    // Write to a .part file and rename on success, so an interrupted
+    // download can never leave a half-written file that is mistaken for a
+    // valid model.
+    final part = '$dest.part';
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 30);
+    IOSink? sink;
     try {
       final req = await client.getUrl(Uri.parse(url));
       final resp = await req.close();
@@ -70,15 +81,27 @@ class WamBridge {
         throw Exception('下载失败（HTTP ${resp.statusCode}）：$url');
       }
       final total = resp.contentLength;
-      final file = File(dest);
-      final sink = file.openWrite();
+      final file = File(part);
+      sink = file.openWrite();
       var done = 0;
       await for (final chunk in resp) {
         sink.add(chunk);
         done += chunk.length;
         if (total > 0) onProgress(done, total);
       }
+      await sink.flush();
       await sink.close();
+      sink = null;
+      await File(part).rename(dest);
+    } catch (_) {
+      // Clean up the partial file so a retry starts fresh.
+      try {
+        sink?.close();
+      } catch (_) {}
+      try {
+        if (await File(part).exists()) await File(part).delete();
+      } catch (_) {}
+      rethrow;
     } finally {
       client.close(force: true);
     }
@@ -99,9 +122,15 @@ class WamBridge {
   }
 
   /// Decode a 32-bit message from an image.
+  ///
+  /// The image is downscaled to 256px first: Android MethodChannel payloads
+  /// are limited to roughly 1MB (binder transaction size), and full-size
+  /// photos would exceed it.
   static Future<List<int>> extract(Uint8List imageBytes) async {
+    final small = await resizePng(imageBytes, 256);
+    if (small == null) throw Exception('图片缩放失败');
     final result = await _channel.invokeMethod<List<dynamic>>(
-        'extract', {'img': imageBytes});
+        'extract', {'img': small});
     if (result == null) {
       throw Exception('WAM extract returned null');
     }

@@ -84,8 +84,10 @@ class WmRecord {
 /// choose any integer to protect their watermark.
 class WmSecurity {
   /// Both DWT seeds from one password value (default 1).
+  /// Clamped to a signed 31-bit range: the FFI takes Int32, and negative or
+  /// huge seeds would otherwise break the native call.
   static (int, int) seeds(String password) {
-    final s = int.tryParse(password.trim()) ?? 1;
+    final s = (int.tryParse(password.trim()) ?? 1) & 0x7FFFFFFF;
     return (s, s);
   }
 }
