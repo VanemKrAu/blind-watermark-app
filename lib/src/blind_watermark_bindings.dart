@@ -1,4 +1,4 @@
-// ignore_for_file: non_constant_identifier_names, camel_case_types
+﻿// ignore_for_file: non_constant_identifier_names, camel_case_types
 
 import 'dart:ffi';
 import 'dart:io';
@@ -93,6 +93,8 @@ typedef _bwm_free_string_dart = void Function(Pointer<Utf8> str);
 
 typedef _bwm_get_error_message_native = Pointer<Utf8> Function(Int32 result);
 typedef _bwm_get_error_message_dart = Pointer<Utf8> Function(int result);
+typedef _bwm_get_last_error_native = Pointer<Utf8> Function(BWMHandle handle);
+typedef _bwm_get_last_error_dart = Pointer<Utf8> Function(BWMHandle handle);
 
 typedef _bwm_get_version_native = Pointer<Utf8> Function();
 typedef _bwm_get_version_dart = Pointer<Utf8> Function();
@@ -121,6 +123,7 @@ class BlindWatermarkBindings {
   late final _bwm_free_buffer_dart bwm_free_buffer;
   late final _bwm_free_string_dart bwm_free_string;
   late final _bwm_get_error_message_dart bwm_get_error_message;
+  late final _bwm_get_last_error_dart bwm_get_last_error;
   late final _bwm_get_version_dart bwm_get_version;
 
   BlindWatermarkBindings(this._lib) {
@@ -155,6 +158,8 @@ class BlindWatermarkBindings {
     bwm_free_string = _lib.lookupFunction<_bwm_free_string_native, _bwm_free_string_dart>('bwm_free_string');
     bwm_get_error_message =
         _lib.lookupFunction<_bwm_get_error_message_native, _bwm_get_error_message_dart>('bwm_get_error_message');
+    bwm_get_last_error =
+        _lib.lookupFunction<_bwm_get_last_error_native, _bwm_get_last_error_dart>('bwm_get_last_error');
     bwm_get_version = _lib.lookupFunction<_bwm_get_version_native, _bwm_get_version_dart>('bwm_get_version');
   }
 
@@ -172,7 +177,10 @@ class BlindWatermarkBindings {
       return DynamicLibrary.open('flutter_blind_watermark.framework/flutter_blind_watermark');
     } else if (Platform.isAndroid) {
       return DynamicLibrary.open('libflutter_blind_watermark.so');
+    } else if (Platform.isWindows) {
+      return DynamicLibrary.open('flutter_blind_watermark.dll');
     }
-    throw UnsupportedError('Platform ${Platform.operatingSystem} is not supported. Only Android and iOS are supported.');
+    throw UnsupportedError('Platform ${Platform.operatingSystem} is not supported. Only Android, iOS and Windows are supported.');
   }
 }
+

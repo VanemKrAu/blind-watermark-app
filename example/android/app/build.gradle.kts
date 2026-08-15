@@ -39,6 +39,10 @@ android {
     }
 }
 
+dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
+}
+
 flutter {
     source = "../.."
 }

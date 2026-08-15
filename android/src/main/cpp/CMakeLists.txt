@@ -34,6 +34,7 @@ set(SOURCES
     "${PLUGIN_ROOT}/src/color_convert.cpp"
     "${PLUGIN_ROOT}/src/dct.cpp"
     "${PLUGIN_ROOT}/src/dwt.cpp"
+    "${PLUGIN_ROOT}/src/numpy_rng.cpp"
     "${PLUGIN_ROOT}/src/watermark_core.cpp"
     "${PLUGIN_ROOT}/src/blind_watermark_ffi.cpp"
     ${WEBP_DEC_SOURCES}

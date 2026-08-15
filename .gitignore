@@ -51,3 +51,13 @@ app.*.map.json
 /example/ios/Pods/
 /example/ios/.symlinks/
 /example/android/.gradle/
+
+# Project documents (change log stays local)
+LOG.md
+LOG-INDEX.md
+
+# WAM models: hosted separately (see blind-watermark-models repo)
+example/assets/onnx/
+
+# NDK build artifacts
+android/.cxx/

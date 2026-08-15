@@ -2,7 +2,7 @@ name: flutter_blind_watermark_example
 description: "Example app for flutter_blind_watermark plugin."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.1.0+3
 
 environment:
   sdk: ^3.5.0
@@ -15,6 +15,18 @@ dependencies:
 
   # File picker for selecting images
   file_picker: ^8.0.0
+
+  # Save images directly to gallery (Android/iOS), no share sheet
+  gal: ^2.3.0
+
+  # Embed history storage for strong-robust (WAM) code matching
+  shared_preferences: ^2.3.0
+
+  # App files dir for on-demand WAM model download
+  path_provider: ^2.1.0
+
+  # Share/save watermarked images (Android)
+  share_plus: ^10.0.0
 
   cupertino_icons: ^1.0.8
 

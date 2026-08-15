@@ -17,17 +17,12 @@ Eigen::MatrixXd padToEven(const Eigen::MatrixXd& input) {
         return input;
     }
 
+    // Zero padding, matching pywt symmetric-mode behaviour on even inputs and
+    // cv2.copyMakeBorder(BORDER_CONSTANT, 0) used by the Python library.
+    // (The watermark pipeline always feeds even-sized matrices, so this only
+    // guards against direct misuse.)
     Eigen::MatrixXd padded = Eigen::MatrixXd::Zero(newRows, newCols);
     padded.block(0, 0, rows, cols) = input;
-
-    // Mirror padding for extra row/column
-    if (newRows > rows) {
-        padded.row(rows) = padded.row(rows - 1);
-    }
-    if (newCols > cols) {
-        padded.col(cols) = padded.col(cols - 1);
-    }
-
     return padded;
 }
 

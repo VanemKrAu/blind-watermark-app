@@ -1,4 +1,4 @@
-#include "color_convert.hpp"
+﻿#include "color_convert.hpp"
 #include <cmath>
 
 namespace bwm {
@@ -16,10 +16,13 @@ void rgbToYuv(const std::vector<uint8_t>& rgb, int width, int height,
             double g = rgb[idx + 1];
             double b = rgb[idx + 2];
 
-            // ITU-R BT.601 conversion
+            // ITU-R BT.601 conversion, matching cv2.cvtColor(COLOR_BGR2YUV) float32 path:
+            //   Y = 0.299R + 0.587G + 0.114B
+            //   U = 0.492*(B - Y) + 0.5
+            //   V = 0.877*(R - Y) + 0.5
             Y(y, x) = 0.299 * r + 0.587 * g + 0.114 * b;
-            U(y, x) = -0.14713 * r - 0.28886 * g + 0.436 * b + 128.0;
-            V(y, x) = 0.615 * r - 0.51499 * g - 0.10001 * b + 128.0;
+            U(y, x) = 0.492 * (b - Y(y, x)) + 0.5;
+            V(y, x) = 0.877 * (r - Y(y, x)) + 0.5;
         }
     }
 }
@@ -33,13 +36,16 @@ void yuvToRgb(const Eigen::MatrixXd& Y, const Eigen::MatrixXd& U, const Eigen::M
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             double yVal = Y(y, x);
-            double uVal = U(y, x) - 128.0;
-            double vVal = V(y, x) - 128.0;
+            double uVal = U(y, x) - 0.5;
+            double vVal = V(y, x) - 0.5;
 
-            // ITU-R BT.601 inverse conversion
-            double r = yVal + 1.13983 * vVal;
-            double g = yVal - 0.39465 * uVal - 0.58060 * vVal;
-            double b = yVal + 2.03211 * uVal;
+            // ITU-R BT.601 inverse conversion, matching cv2.cvtColor(COLOR_YUV2BGR) float32:
+            //   R = Y + 1.140*(V - 0.5)
+            //   G = Y - 0.395*(U - 0.5) - 0.581*(V - 0.5)
+            //   B = Y + 2.032*(U - 0.5)
+            double r = yVal + 1.140 * vVal;
+            double g = yVal - 0.395 * uVal - 0.581 * vVal;
+            double b = yVal + 2.032 * uVal;
 
             size_t idx = static_cast<size_t>(y * width + x) * 3;
             rgb[idx] = static_cast<uint8_t>(clamp255(std::round(r)));
@@ -96,3 +102,4 @@ Eigen::MatrixXd binarize(const Eigen::MatrixXd& input, double threshold) {
 }
 
 } // namespace bwm
+

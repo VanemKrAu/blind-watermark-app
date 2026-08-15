@@ -1,4 +1,4 @@
-#include "watermark_core.hpp"
+﻿#include "watermark_core.hpp"
 #include "image_io.hpp"
 #include <cstring>
 #include <cstdlib>
@@ -393,6 +393,12 @@ BWM_EXPORT void bwm_free_string(char* str) {
     free(str);
 }
 
+BWM_EXPORT const char* bwm_get_last_error(void* handle) {
+    if (!handle) return "Invalid handle";
+    auto* data = static_cast<BWMHandleData*>(handle);
+    return data->lastError.empty() ? nullptr : data->lastError.c_str();
+}
+
 BWM_EXPORT const char* bwm_get_error_message(int result) {
     switch (result) {
         case BWM_OK: return "Success";
@@ -411,3 +417,4 @@ BWM_EXPORT const char* bwm_get_version() {
 }
 
 } // extern "C"
+

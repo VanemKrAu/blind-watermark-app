@@ -86,7 +86,14 @@ class BlindWatermark {
     if (result != BWMResult.ok) {
       final msgPtr = _bindings.bwm_get_error_message(result);
       final message = msgPtr.toDartString();
-      throw BlindWatermarkException(result, message);
+      String detail = '';
+      if (_handle != null && _handle != nullptr) {
+        final lastPtr = _bindings.bwm_get_last_error(_handle!);
+        if (lastPtr != nullptr && lastPtr.address != 0) {
+          detail = '：${lastPtr.toDartString()}';
+        }
+      }
+      throw BlindWatermarkException(result, '$message$detail');
     }
   }
 
