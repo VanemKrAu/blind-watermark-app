@@ -1,4 +1,4 @@
-# Miscellaneous
+﻿# Miscellaneous
 *.class
 *.log
 *.pyc
@@ -56,8 +56,13 @@ app.*.map.json
 LOG.md
 LOG-INDEX.md
 
+# Built APKs (published via GitHub Releases)
+dist/
+
 # WAM models: hosted separately (see blind-watermark-models repo)
 example/assets/onnx/
 
 # NDK build artifacts
 android/.cxx/
+
+

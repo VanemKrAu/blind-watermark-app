@@ -179,7 +179,9 @@ class _EmbedPageState extends State<EmbedPage> {
         final useWam = await _useWam(bytes);
 
         if (useWam) {
-          if (!await ensureWamModels(context)) {
+          if (!mounted) return;
+          final ready = await ensureWamModels(context);
+          if (!ready) {
             if (mounted) {
               setState(() => _error = '强鲁棒模式需要下载模型后才能使用');
             }

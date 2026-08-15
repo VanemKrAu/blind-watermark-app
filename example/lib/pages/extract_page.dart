@@ -88,7 +88,9 @@ class _ExtractPageState extends State<ExtractPage> {
 
       // 1) Strong-robust (WAM): no parameters needed.
       if (WamBridge.isSupported) {
-        if (!await ensureWamModels(context)) {
+        if (!mounted) return;
+        final ready = await ensureWamModels(context);
+        if (!ready) {
           if (mounted) {
             setState(() => _error = '强鲁棒模式需要下载模型后才能使用');
           }
@@ -501,4 +503,5 @@ Uint8List? _extractLogoIsolate((Uint8List, int, int, int) args) {
     bwm.dispose();
   }
 }
+
 

@@ -1,4 +1,4 @@
-name: flutter_blind_watermark_example
+﻿name: flutter_blind_watermark_example
 description: "Example app for flutter_blind_watermark plugin."
 publish_to: 'none'
 
@@ -40,3 +40,5 @@ flutter:
 
   assets:
     - assets/
+
+

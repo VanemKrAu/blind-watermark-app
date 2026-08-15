@@ -28,6 +28,12 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        ndk {
+            // Keep the two ABIs covering virtually all devices; this drops
+            // ~34MB of x86/x86_64 ONNX Runtime binaries from the APK.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -35,6 +41,14 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // Drop x86/x86_64 ONNX Runtime binaries (emulator-only ABIs):
+            // saves ~34MB per APK.
+            excludes += listOf("**/x86_64/*.so", "**/x86/*.so")
         }
     }
 }

@@ -35,7 +35,7 @@ Future<bool> ensureWamModels(BuildContext context) async {
   // Download with progress.
   if (!context.mounted) return false;
   var progress = 0.0;
-  final done = await showDialog<bool>(
+  await showDialog<bool>(
     context: context,
     barrierDismissible: false,
     builder: (ctx) => StatefulBuilder(
