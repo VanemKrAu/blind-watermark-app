@@ -15,8 +15,9 @@ blind-watermark-app/
 │  ├─ image_io.*         # PNG/JPEG/BMP/WebP 编解码（stb_image）
 │  └─ blind_watermark_ffi.*  # C ABI 接口（Dart FFI 调用）+ 原生崩溃捕获
 ├─ lib/            Dart 层（FFI 绑定 + 嵌入/提取 API）
-├─ example/        安卓 App（Material 3 原生风格，中文界面）
-│  └─ lib/pages/   embed_page.dart（嵌入）/ extract_page.dart（提取）/ about_page.dart（关于）
+├─ example/        安卓 App（Material 3 原生风格，中文界面，4 tab）
+│  └─ lib/pages/   embed_page.dart（嵌入）/ extract_page.dart（提取）/
+│                  history_page.dart（嵌入记录）/ about_page.dart（关于）
 ├─ android/ ios/ windows/  平台工程
 └─ tools/interop/  算法回归测试（Python↔C++ 双向对拍，非强制互通约束）
 ```
@@ -24,7 +25,9 @@ blind-watermark-app/
 ## 功能
 
 - **嵌入**：选图 → 输入文本或 Logo 图 → （可选密码）→ 输出打水印的图
-- **提取**：选图 → 自动识别（零参数）→ 还原文本 / Logo / 强鲁棒标识；他人图片可用「手动提取参数」
+- **提取**：选图 → 自动识别（零参数）→ 还原文本 / Logo / 强鲁棒标识；他人图片可用「手动提取参数」；WAM 多尝试提取（原图/85%/70% 裁剪按置信度择优）
+- **嵌入记录**：本机全部记录（32 位码可复制/时间戳/密码）——左滑删除/归档/置顶（QQ 风格），长按多选批量操作，归档收纳至二级页且不参与自动匹配
+- **触觉反馈**：长按/勾选/归档/删除/成功均有对应震动（Android HapticFeedbackConstants 规范）
 - 单一入口：嵌入 = 选图 + 输入 + 一个按钮；提取 = 选图 + 一个按钮
 - **方案策略**：文本水印一律用强鲁棒方案（WAM，抗裁剪/旋转/压缩，输出保持原分辨率锐利）；Logo 水印用 DWT（完整还原，超大图先自动缩放至 1536px 内）
 - 全部本地离线处理，图片不上传；模型已内置在安装包内，开箱即用
@@ -77,6 +80,7 @@ g++ -std=c++17 -O2 bwm_cli.cpp ../../src/{numpy_rng,watermark_core,dct,dwt,color
 - **单一入口**：嵌入 = 选图 + 输入文本/Logo + 一个按钮；提取 = 选图 + 一个按钮（全自动，零参数）
 - **方案策略**：文本水印一律强鲁棒（WAM，任意图幅，抗裁剪/旋转/压缩）；Logo 用 DWT（超大图先自动缩放至 1536px 内）
 - 提取依赖**本机嵌入记录**（最近 100 条）：本机自动还原完整文本 / Logo；**他人图片**可在「手动提取参数」输入密码 + 长度（文本）或 Logo 尺寸（图片）；强鲁棒标识可在任何设备识别出 32 位码
+- **记录管理**：「嵌入记录」tab 可左滑删除/归档/置顶、长按多选批量操作；**归档记录不参与自动提取匹配**；系统返回键在多选时优先退出多选
 
 ## 安全模型
 
