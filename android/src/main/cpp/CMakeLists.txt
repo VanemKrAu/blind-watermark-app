@@ -64,16 +64,17 @@ target_include_directories(flutter_blind_watermark PRIVATE
     "${WEBP_ROOT}/src"
 )
 
-# Compiler flags - maximum optimization with NEON
+# Compiler flags - plain -O3 only. The previous flags (-ffast-math, -flto,
+# -ftree-vectorize, -funroll-loops) gave no measurable benefit and carry real
+# risk: -ffast-math breaks IEEE-754 semantics (Eigen JacobiSVD convergence)
+# and LTO miscompilation is architecture-specific — a silent native crash on
+# ARM64 that never reproduces on the x64 interop harness is exactly its
+# signature. Keep the build boring and bit-exact.
 target_compile_options(flutter_blind_watermark PRIVATE
     -O3
-    -ffast-math
-    -ftree-vectorize
     -fomit-frame-pointer
-    -funroll-loops
     -fPIC
     -fvisibility=default
-    -flto
     -Wall
     -Wextra
     -Wno-unused-parameter
@@ -94,10 +95,9 @@ target_compile_definitions(flutter_blind_watermark PRIVATE
     EIGEN_DONT_PARALLELIZE=0
 )
 
-# Linker flags - LTO and symbol export
+# Linker flags - symbol export
 target_link_options(flutter_blind_watermark PRIVATE
     -Wl,--no-undefined
-    -flto
     -O3
 )
 

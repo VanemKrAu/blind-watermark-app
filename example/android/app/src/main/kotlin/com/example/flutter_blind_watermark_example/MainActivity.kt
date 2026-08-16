@@ -1,5 +1,8 @@
 package com.example.flutter_blind_watermark_example
 
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import io.flutter.embedding.android.FlutterActivity
@@ -11,6 +14,8 @@ import ai.onnxruntime.OrtSession
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.lang.reflect.Array
 
 class MainActivity : FlutterActivity() {
@@ -25,6 +30,57 @@ class MainActivity : FlutterActivity() {
     private var ortEnv: OrtEnvironment? = null
     private var embedSession: OrtSession? = null
     private var extractSession: OrtSession? = null
+
+    /**
+     * Captures uncaught Java/Kotlin exceptions (e.g. OOM, UnsatisfiedLinkError
+     * on the inference executor) into filesDir/crash.txt, then re-raises so
+     * the crash behavior is unchanged. The native side (blind_watermark_ffi)
+     * writes NATIVE CRASH markers into the same file via its own signal
+     * handlers; showCrashReportIfAny surfaces the report at next launch.
+     */
+    private fun installCrashCapture() {
+        try {
+            val crashFile = File(filesDir, "crash.txt")
+            val prev = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                try {
+                    val sw = StringWriter()
+                    throwable.printStackTrace(PrintWriter(sw))
+                    crashFile.writeText("JAVA CRASH [${thread.name}]:\n$sw\n")
+                } catch (_: Exception) {}
+                prev?.uncaughtException(thread, throwable)
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** Shows any crash report written by the previous run, then deletes it. */
+    private fun showCrashReportIfAny() {
+        try {
+            val sb = StringBuilder()
+            for (f in listOf(File(filesDir, "crash.txt"), File(cacheDir, "crash.txt"))) {
+                if (f.exists()) {
+                    sb.append(f.readText()).append("\n")
+                    f.delete()
+                }
+            }
+            if (sb.isNotEmpty()) {
+                val report = sb.toString()
+                runOnUiThread {
+                    try {
+                        val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                        AlertDialog.Builder(this)
+                            .setTitle("上次运行发生崩溃")
+                            .setMessage(report)
+                            .setPositiveButton("复制报告") { _, _ ->
+                                cb.setPrimaryClip(ClipData.newPlainText("crash", report))
+                            }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
+    }
 
     // ONNX sessions are NOT thread-safe: serialize all inference on a single
     // worker thread. Lazily (re)created: the Activity can be destroyed and
@@ -42,6 +98,14 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        installCrashCapture()
+        // Load the FFI library at startup so its static initializer installs
+        // the native signal handlers (SIGSEGV/SIGABRT/...) BEFORE any
+        // inference runs — the WAM/ONNX path never loads it via Dart FFI.
+        try {
+            System.loadLibrary("flutter_blind_watermark")
+        } catch (_: Throwable) {}
+        showCrashReportIfAny()
         // Defensive: mark every app-owned directory with .nomedia so ROM
         // galleries never index transient files (file_picker cache copies,
         // logo temp files, model files). Some ROMs scan the external cache

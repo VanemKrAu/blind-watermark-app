@@ -504,7 +504,7 @@ class _ExtractPageState extends State<ExtractPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.3',
+              '盲水印 v1.1.4',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,

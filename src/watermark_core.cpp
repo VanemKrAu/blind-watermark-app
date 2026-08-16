@@ -1,4 +1,4 @@
-﻿#include "watermark_core.hpp"
+#include "watermark_core.hpp"
 #include "color_convert.hpp"
 #include "dwt.hpp"
 #include "dct.hpp"
@@ -588,21 +588,22 @@ Image BlindWatermarkCore::embed() {
         throw std::runtime_error("No watermark set");
     }
 
-    // Work on copies of the padded YUV channels.
-    std::vector<Eigen::MatrixXd> work(3);
+    // Embed in place: the previous copies of all three channels peaked at
+    // ~+75MB on a 2048px image — meaningful on low-RAM phones, and nothing
+    // reads yuv_ after embed(). Bit-identical results (same math on the same
+    // matrices).
     for (int ch = 0; ch < 3; ++ch) {
-        work[ch] = yuv_[ch];
-        embedChannel(work[ch]);
+        embedChannel(yuv_[ch]);
     }
 
     // Reconstruct: padded YUV -> RGB
-    const int pH = static_cast<int>(work[0].rows());
-    const int pW = static_cast<int>(work[0].cols());
+    const int pH = static_cast<int>(yuv_[0].rows());
+    const int pW = static_cast<int>(yuv_[0].cols());
 
     // yuvToRgb works on full matrices; crop to original size first.
-    Eigen::MatrixXd Y = work[0].topLeftCorner(img_h_, img_w_);
-    Eigen::MatrixXd U = work[1].topLeftCorner(img_h_, img_w_);
-    Eigen::MatrixXd V = work[2].topLeftCorner(img_h_, img_w_);
+    Eigen::MatrixXd Y = yuv_[0].topLeftCorner(img_h_, img_w_);
+    Eigen::MatrixXd U = yuv_[1].topLeftCorner(img_h_, img_w_);
+    Eigen::MatrixXd V = yuv_[2].topLeftCorner(img_h_, img_w_);
 
     std::vector<uint8_t> rgb;
     yuvToRgb(Y, U, V, rgb);

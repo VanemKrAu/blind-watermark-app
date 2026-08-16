@@ -1,9 +1,16 @@
-﻿#include "watermark_core.hpp"
+#include "watermark_core.hpp"
 #include "image_io.hpp"
+#include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
 #include <memory>
 #include <string>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 // Error codes
 #define BWM_OK 0
@@ -14,6 +21,59 @@
 #define BWM_ERROR_EXTRACT_FAILED -5
 #define BWM_ERROR_INVALID_PARAMS -6
 #define BWM_ERROR_UNKNOWN -99
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Crash capture: native faults (SIGSEGV/SIGABRT/SIGBUS/SIGFPE) write a marker
+// to a file the app reads at next launch and shows to the user. This turns an
+// otherwise silent "闪退" into a reportable diagnostic. The handler only does
+// open/write/close (async-signal-safe in practice) and re-raises so the
+// system still produces its own tombstone.
+// ---------------------------------------------------------------------------
+char g_crash_log[1024] = {0};
+
+#ifndef _WIN32
+void crash_handler(int sig) {
+    if (g_crash_log[0] != 0) {
+        int fd = open(g_crash_log, O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (fd >= 0) {
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                             "NATIVE CRASH: signal=%d at %lld\n",
+                             sig, static_cast<long long>(time(nullptr)));
+            write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+            close(fd);
+        }
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+struct CrashGuard {
+    CrashGuard() {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = crash_handler;
+        sigaction(SIGSEGV, &sa, nullptr);
+        sigaction(SIGABRT, &sa, nullptr);
+        sigaction(SIGBUS, &sa, nullptr);
+        sigaction(SIGFPE, &sa, nullptr);
+        // Default crash log location: the app cache dir when TMPDIR is set
+        // (Android sets it per-app), else the app's files dir (fixed package
+        // id — the app reads both locations at startup).
+        const char* tmp = getenv("TMPDIR");
+        if (tmp != nullptr && tmp[0] != 0) {
+            snprintf(g_crash_log, sizeof(g_crash_log), "%s/crash.txt", tmp);
+        } else {
+            snprintf(g_crash_log, sizeof(g_crash_log),
+                     "/data/user/0/com.example.flutter_blind_watermark_example/files/crash.txt");
+        }
+    }
+} g_crash_guard;
+#endif
+
+}  // namespace
 
 // Handle wrapper
 struct BWMHandleData {
