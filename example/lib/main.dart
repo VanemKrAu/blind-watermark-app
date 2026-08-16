@@ -46,7 +46,8 @@ String? _symbolize(int address) {
 String _enrichReport(String report) {
   final out = <String>[];
   for (final line in report.split('\n')) {
-    final m = RegExp(r'^(PC|LR)=0x([0-9a-fA-F]+)').firstMatch(line);
+    final m =
+        RegExp(r'^(PC|LR|F\d+)=0x([0-9a-fA-F]+)').firstMatch(line);
     if (m != null) {
       final addr = int.tryParse(m.group(2)!, radix: 16) ?? 0;
       final sym = _symbolize(addr);

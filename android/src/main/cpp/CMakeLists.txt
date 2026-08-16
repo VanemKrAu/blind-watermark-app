@@ -70,9 +70,11 @@ target_include_directories(flutter_blind_watermark PRIVATE
 # and LTO miscompilation is architecture-specific — a silent native crash on
 # ARM64 that never reproduces on the x64 interop harness is exactly its
 # signature. Keep the build boring and bit-exact.
+#
+# NOTE: no -fomit-frame-pointer — the crash handler walks the frame-pointer
+# chain to find the caller of abort().
 target_compile_options(flutter_blind_watermark PRIVATE
     -O3
-    -fomit-frame-pointer
     -fPIC
     -fvisibility=default
     -Wall

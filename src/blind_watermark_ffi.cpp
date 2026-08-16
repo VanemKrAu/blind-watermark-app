@@ -47,27 +47,67 @@ void crash_handler(int sig, siginfo_t* /*si*/, void* uc) {
             char buf[512];
             // PC/LR from the crash site (signal handler runs on the faulting
             // thread; ucontext carries its registers).
-            uintptr_t pc = 0, lr = 0;
+            uintptr_t pc = 0, lr = 0, fp = 0;
 #if defined(__aarch64__)
             ucontext_t* u = static_cast<ucontext_t*>(uc);
             pc = u->uc_mcontext.pc;
             lr = u->uc_mcontext.regs[30];
+            fp = u->uc_mcontext.regs[29];
 #elif defined(__arm__)
             ucontext_t* u = static_cast<ucontext_t*>(uc);
             pc = u->uc_mcontext.arm_pc;
             lr = u->uc_mcontext.arm_lr;
+            fp = u->uc_mcontext.arm_fp;
 #elif defined(__x86_64__)
             ucontext_t* u = static_cast<ucontext_t*>(uc);
             pc = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RIP]);
             lr = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RBP]);
+            fp = lr;
 #endif
-            int n = snprintf(buf, sizeof(buf),
-                             "NATIVE CRASH: signal=%d at %lld tid=%ld\nPC=0x%llx\nLR=0x%llx\n",
-                             sig, static_cast<long long>(time(nullptr)),
-                             static_cast<long>(syscall(SYS_gettid)),
-                             static_cast<unsigned long long>(pc),
-                             static_cast<unsigned long long>(lr));
+            // Best-effort thread name (/proc/self/task/<tid>/comm).
+            char comm[64] = "?";
+            char comm_path[128];
+            int n = snprintf(comm_path, sizeof(comm_path),
+                             "/proc/self/task/%ld/comm",
+                             static_cast<long>(syscall(SYS_gettid)));
+            if (n > 0 && n < static_cast<int>(sizeof(comm_path))) {
+                int cfd = open(comm_path, O_RDONLY);
+                if (cfd >= 0) {
+                    ssize_t r = read(cfd, comm, sizeof(comm) - 1);
+                    if (r > 0) {
+                        comm[r] = 0;
+                        while (r > 0 && (comm[r - 1] == '\n' || comm[r - 1] == '\r')) {
+                            comm[--r] = 0;
+                        }
+                    }
+                    close(cfd);
+                }
+            }
+            n = snprintf(buf, sizeof(buf),
+                         "NATIVE CRASH: signal=%d at %lld tid=%ld thread=%s\nPC=0x%llx\nLR=0x%llx\n",
+                         sig, static_cast<long long>(time(nullptr)),
+                         static_cast<long>(syscall(SYS_gettid)), comm,
+                         static_cast<unsigned long long>(pc),
+                         static_cast<unsigned long long>(lr));
             write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+
+            // Frame-pointer stack walk: PC/LR are both inside abort() itself
+            // (abort raises SIGABRT synchronously), so the caller of abort is
+            // one frame up. With SIGSEGV/SIGBUS masked (sa_mask), a faulting
+            // read leaves the destination unchanged (0) and the guards break
+            // the loop, so a corrupt chain cannot recurse.
+            // aarch64 frame: [fp+0] = saved fp, [fp+8] = saved lr.
+            for (int i = 0; i < 20 && fp > 0x10000; ++i) {
+                uintptr_t saved_lr =
+                    *reinterpret_cast<const uintptr_t*>(fp + 8);
+                uintptr_t saved_fp =
+                    *reinterpret_cast<const uintptr_t*>(fp);
+                n = snprintf(buf, sizeof(buf), "F%d=0x%llx\n", i,
+                             static_cast<unsigned long long>(saved_lr));
+                write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+                if (saved_fp <= fp || saved_fp > fp + 0x400000) break;
+                fp = saved_fp;
+            }
             close(fd);
         }
     }
@@ -81,6 +121,15 @@ struct CrashGuard {
         memset(&sa, 0, sizeof(sa));
         sa.sa_sigaction = crash_handler;
         sa.sa_flags = SA_SIGINFO;
+        // Block the handled signals while the handler runs: a fault during
+        // the frame-pointer walk stays pending instead of recursing, and a
+        // faulting read leaves its destination unchanged (0), so the walk
+        // guards break cleanly.
+        sigemptyset(&sa.sa_mask);
+        sigaddset(&sa.sa_mask, SIGSEGV);
+        sigaddset(&sa.sa_mask, SIGBUS);
+        sigaddset(&sa.sa_mask, SIGABRT);
+        sigaddset(&sa.sa_mask, SIGFPE);
         sigaction(SIGSEGV, &sa, nullptr);
         sigaction(SIGABRT, &sa, nullptr);
         sigaction(SIGBUS, &sa, nullptr);

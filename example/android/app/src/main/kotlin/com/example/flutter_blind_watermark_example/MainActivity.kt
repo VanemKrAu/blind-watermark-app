@@ -116,28 +116,38 @@ class MainActivity : FlutterActivity() {
             if (sb.isNotEmpty()) {
                 val report = sb.toString()
                 // Surface it through Flutter (Material 3 dialog, consistent
-                // with the app UI) once the Dart side is ready; the system
-                // AlertDialog is the fallback if Flutter never becomes ready.
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    val ch = wamChannel
-                    if (ch != null && dartReadyFlag) {
+                // with the app UI) as soon as the Dart side is ready; the
+                // system AlertDialog is the fallback if Flutter never
+                // becomes ready within 6s.
+                val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                val start = System.currentTimeMillis()
+                val deliver = object : Runnable {
+                    override fun run() {
+                        val ch = wamChannel
+                        if (ch != null && dartReadyFlag) {
+                            try {
+                                ch.invokeMethod("onCrashReport", report)
+                                return
+                            } catch (_: Exception) {}
+                        }
+                        if (System.currentTimeMillis() - start < 6000) {
+                            handler.postDelayed(this, 200)
+                            return
+                        }
                         try {
-                            ch.invokeMethod("onCrashReport", report)
-                            return@postDelayed
+                            val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("上次运行发生崩溃")
+                                .setMessage(report)
+                                .setPositiveButton("复制报告") { _, _ ->
+                                    cb.setPrimaryClip(ClipData.newPlainText("crash", report))
+                                }
+                                .setNegativeButton("关闭", null)
+                                .show()
                         } catch (_: Exception) {}
                     }
-                    try {
-                        val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                        AlertDialog.Builder(this)
-                            .setTitle("上次运行发生崩溃")
-                            .setMessage(report)
-                            .setPositiveButton("复制报告") { _, _ ->
-                                cb.setPrimaryClip(ClipData.newPlainText("crash", report))
-                            }
-                            .setNegativeButton("关闭", null)
-                            .show()
-                    } catch (_: Exception) {}
-                }, 3000)
+                }
+                handler.post(deliver)
             }
         } catch (_: Exception) {}
     }
