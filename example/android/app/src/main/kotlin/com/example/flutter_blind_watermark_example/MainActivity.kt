@@ -9,6 +9,8 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.lang.reflect.Array
 
 class MainActivity : FlutterActivity() {
@@ -25,10 +27,18 @@ class MainActivity : FlutterActivity() {
     private var extractSession: OrtSession? = null
 
     // ONNX sessions are NOT thread-safe: serialize all inference on a single
-    // worker thread (embed + extract can otherwise run concurrently from the
-    // two pages and crash).
-    private val inferenceExecutor =
-        java.util.concurrent.Executors.newSingleThreadExecutor()
+    // worker thread. Lazily (re)created: the Activity can be destroyed and
+    // recreated (rotation, low memory), which would otherwise leave us with a
+    // shut-down executor that throws on every call.
+    private var inferenceExecutor: java.util.concurrent.ExecutorService? = null
+
+    private fun executor(): java.util.concurrent.ExecutorService {
+        val e = inferenceExecutor
+        if (e != null && !e.isShutdown) return e
+        val fresh = java.util.concurrent.Executors.newSingleThreadExecutor()
+        inferenceExecutor = fresh
+        return fresh
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -42,47 +52,56 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 // Heavy ONNX inference must never run on the platform (UI)
                 // thread — it would block rendering and risk an ANR.
-                inferenceExecutor.execute {
-                    try {
-                        when (call.method) {
-                            "embed" -> {
-                                val img = call.argument<ByteArray>("img")!!
-                                val bits = call.argument<List<Double>>("bits")!!
-                                val out = embed(img, bits)
-                                runOnUiThread {
-                                    try { result.success(out) } catch (_: Exception) {}
+                try {
+                    executor().execute {
+                        try {
+                            when (call.method) {
+                                "embed" -> {
+                                    val img = call.argument<ByteArray>("img")!!
+                                    val bits = call.argument<List<Double>>("bits")!!
+                                    val out = embed(img, bits)
+                                    runOnUiThread {
+                                        try { result.success(out) } catch (_: Exception) {}
+                                    }
+                                }
+                                "extract" -> {
+                                    val img = call.argument<ByteArray>("img")!!
+                                    val out = extract(img)
+                                    runOnUiThread {
+                                        try { result.success(out) } catch (_: Exception) {}
+                                    }
+                                }
+                                "modelReady" -> {
+                                    val ready = modelReady()
+                                    runOnUiThread {
+                                        try { result.success(ready) } catch (_: Exception) {}
+                                    }
+                                }
+                                "reloadModels" -> {
+                                    reloadModels()
+                                    val ready = modelReady()
+                                    runOnUiThread {
+                                        try { result.success(ready) } catch (_: Exception) {}
+                                    }
+                                }
+                                else -> runOnUiThread {
+                                    try { result.notImplemented() } catch (_: Exception) {}
                                 }
                             }
-                            "extract" -> {
-                                val img = call.argument<ByteArray>("img")!!
-                                val out = extract(img)
-                                runOnUiThread {
-                                    try { result.success(out) } catch (_: Exception) {}
-                                }
-                            }
-                            "modelReady" -> {
-                                val ready = modelReady()
-                                runOnUiThread {
-                                    try { result.success(ready) } catch (_: Exception) {}
-                                }
-                            }
-                            "reloadModels" -> {
-                                reloadModels()
-                                val ready = modelReady()
-                                runOnUiThread {
-                                    try { result.success(ready) } catch (_: Exception) {}
-                                }
-                            }
-                            else -> runOnUiThread {
-                                try { result.notImplemented() } catch (_: Exception) {}
+                        } catch (e: Exception) {
+                            runOnUiThread {
+                                try {
+                                    result.error("WAM_ERROR", e.message ?: "unknown", null)
+                                } catch (_: Exception) {}
                             }
                         }
-                    } catch (e: Exception) {
-                        runOnUiThread {
-                            try {
-                                result.error("WAM_ERROR", e.message ?: "unknown", null)
-                            } catch (_: Exception) {}
-                        }
+                    }
+                } catch (e: Exception) {
+                    // Never crash the app on channel setup issues.
+                    runOnUiThread {
+                        try {
+                            result.error("WAM_ERROR", e.message ?: "unknown", null)
+                        } catch (_: Exception) {}
                     }
                 }
             }
@@ -95,19 +114,24 @@ class MainActivity : FlutterActivity() {
         return env
     }
 
-    /** Model files are bundled in Flutter assets. Flutter packages assets
-     *  under assets/flutter_assets/<declared path>, so the native lookup must
-     *  use the full path. */
-    private fun modelBytes(name: String): ByteArray? {
+    /** Extracts a bundled model into filesDir once, then loads the session
+     *  from the file path — avoids holding a 95MB byte[] plus the session
+     *  copy in memory at the same time. */
+    private fun ensureModelFile(name: String): File? {
+        val f = File(filesDir, "models/$name")
+        if (f.exists() && f.length() > 0) return f
         return try {
-            assets.open("flutter_assets/assets/onnx/$name").readBytes()
+            assets.open("flutter_assets/assets/onnx/$name").use { input ->
+                f.parentFile?.mkdirs()
+                FileOutputStream(f).use { out -> input.copyTo(out) }
+            }
+            f
         } catch (e: Exception) {
             null
         }
     }
 
-    /** Lightweight existence check — must NOT read the 95MB model into
-     *  memory every time. */
+    /** Lightweight existence check — never reads the model into memory. */
     private fun modelReady(): Boolean {
         return try {
             assets.open("flutter_assets/assets/onnx/wam_embedder.onnx").close()
@@ -128,18 +152,18 @@ class MainActivity : FlutterActivity() {
     private fun getEmbedSession(): OrtSession {
         embedSession?.let { return it }
         val env = getEnv()
-        val bytes = modelBytes("wam_embedder.onnx")
+        val model = ensureModelFile("wam_embedder.onnx")
             ?: throw IllegalArgumentException("embedder model missing from app bundle")
-        embedSession = env.createSession(bytes, OrtSession.SessionOptions())
+        embedSession = env.createSession(model.path, OrtSession.SessionOptions())
         return embedSession!!
     }
 
     private fun getExtractSession(): OrtSession {
         extractSession?.let { return it }
         val env = getEnv()
-        val bytes = modelBytes("wam_extractor_int8.onnx")
+        val model = ensureModelFile("wam_extractor_int8.onnx")
             ?: throw IllegalArgumentException("extractor model missing from app bundle")
-        extractSession = env.createSession(bytes, OrtSession.SessionOptions())
+        extractSession = env.createSession(model.path, OrtSession.SessionOptions())
         return extractSession!!
     }
 
@@ -290,7 +314,9 @@ class MainActivity : FlutterActivity() {
         embedSession?.close()
         extractSession?.close()
         ortEnv?.close()
-        inferenceExecutor.shutdown()
+        // Shut down but keep the reference: the lazy executor() getter
+        // recreates it if the Activity is rebuilt.
+        inferenceExecutor?.shutdown()
         super.onDestroy()
     }
 }
