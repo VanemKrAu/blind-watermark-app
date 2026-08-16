@@ -1,24 +1,24 @@
 # Blind Watermark App（盲水印）
 
 基于 DWT-DCT-SVD 算法的图片盲水印工具：**嵌入水印无需原图即可提取**（盲水印）。
-安卓 App（Flutter + C++ FFI），核心算法与 Python 库 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark) **bit 级互通**——两边打的水印互相可提取。
+安卓 App（Flutter + C++ FFI），核心算法源自 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），App 内嵌入/提取自洽闭环；**与参考库的互通不再作为约束**（大图会先缩放至 2048px 内，仅保证 App 内一致）。
 
 ## 目录结构
 
 ```
 blind-watermark-app/
 ├─ src/            C++ 核心（算法 + 随机数 + 图像 I/O）
-│  ├─ numpy_rng.*        # MT19937 精确复刻 numpy RandomState（互通关键）
-│  ├─ watermark_core.*   # DWT-DCT-SVD 嵌入/提取（与 Python 版逐 bit 对齐）
+│  ├─ numpy_rng.*        # MT19937 复刻 numpy RandomState（与参考实现一致）
+│  ├─ watermark_core.*   # DWT-DCT-SVD 嵌入/提取（源自参考算法，App 内自洽）
 │  ├─ dct.* / dwt.*      # 正交 DCT-II / Haar 小波
 │  ├─ color_convert.*    # YUV 转换（复刻 cv2 浮点路径，含 +0.5 偏置）
 │  ├─ image_io.*         # PNG/JPEG/BMP/WebP 编解码（stb_image）
-│  └─ blind_watermark_ffi.*  # C ABI 接口（Dart FFI 调用）
+│  └─ blind_watermark_ffi.*  # C ABI 接口（Dart FFI 调用）+ 原生崩溃捕获
 ├─ lib/            Dart 层（FFI 绑定 + 嵌入/提取 API）
 ├─ example/        安卓 App（Material 3 原生风格，中文界面）
 │  └─ lib/pages/   embed_page.dart（嵌入）/ extract_page.dart（提取）
 ├─ android/ ios/ windows/  平台工程
-└─ tools/interop/  互通测试工具（Python↔C++ 双向对拍）
+└─ tools/interop/  算法回归测试（Python↔C++ 双向对拍，非强制互通约束）
 ```
 
 ## 功能
@@ -26,7 +26,7 @@ blind-watermark-app/
 - **嵌入**：选图 → 输入文本或 Logo 图 → （可选密码）→ 输出打水印的图
 - **提取**：选图 → 自动识别（零参数）→ 还原文本 / Logo / 强鲁棒标识
 - 单一入口：嵌入 = 选图 + 输入 + 一个按钮；提取 = 选图 + 一个按钮
-- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（保持画质）
+- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（超大图先自动缩放至 2048px 内，兼顾画质与稳定性）
 - 全部本地离线处理，图片不上传；模型已内置在安装包内，开箱即用
 
 ## 致谢与参考的开源项目
@@ -35,7 +35,7 @@ blind-watermark-app/
 
 | 项目 | 用途 | 协议 |
 |---|---|---|
-| [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark) | 核心 DWT-DCT-SVD 盲水印算法（C++ 实现与其 bit 级互通） | MIT |
+| [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark) | 核心 DWT-DCT-SVD 盲水印算法（算法源自该项目） | MIT |
 | [JackCaow/flutter_blind_watermark](https://github.com/JackCaow/flutter_blind_watermark) | Flutter FFI 插件工程脚手架（Eigen/stb_image 集成） | MIT |
 | [facebookresearch/watermark-anything](https://github.com/facebookresearch/watermark-anything) | WAM 强鲁棒水印模型（Meta，ICLR 2025） | MIT |
 | [Eigen](https://eigen.tuxfamily.org/) | 线性代数库（SVD/DCT） | MPL2 |
@@ -43,19 +43,19 @@ blind-watermark-app/
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | Android 端模型推理 | MIT |
 | [Flutter](https://flutter.dev/) | 跨平台 UI 框架 | BSD-3 |
 
-WAM 模型（ONNX，含 int8 量化版）已内置在安装包内；原始权重与转换工具见 [VanemKrAu/blind-watermark-models](https://github.com/VanemKrAu/blind-watermark-models) 与 `tools/wam/`。
+WAM 模型（ONNX，含 int8 量化版）已内置在安装包内。注意：`VanemKrAu/blind-watermark-models` Release 里的 embedder 缺外部数据文件（不可直接用）；App 现用自包含 embedder，由 `tools/wam/export_embedder_selfcontained.py` 从 Meta 官方 checkpoint 导出。
 
 ## 构建
 
 环境：Flutter SDK + Android SDK（NDK 25.1 + CMake），详见 `E:\WorkSpace\.local\env.ps1`（环境变量定向 E 盘）。
-模型（`example/assets/onnx/`）需从 blind-watermark-models Release 获取后放入，然后：
+模型（`example/assets/onnx/`，自包含 embedder + int8 extractor）放入后：
 
 ```bash
 flutter build apk --release
-# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 152MB，模型内置）
+# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 155MB，模型内置）
 ```
 
-## 互通测试
+## 算法回归测试
 
 ```bash
 cd tools/interop
@@ -70,15 +70,17 @@ g++ -std=c++17 -O2 bwm_cli.cpp ../../src/{numpy_rng,watermark_core,dct,dwt,color
   -I ../../src -I ../../third_party -I ../../third_party/Eigen -o bwm_cli.exe
 ```
 
+（互通测试已降级为**回归测试**：与参考库的 bit 级一致不再是产品约束，测试仅用于防止算法改动引入回归。）
+
 ## 使用提示
 
 - **单一入口**：嵌入 = 选图 + 输入文本/Logo + 一个按钮；提取 = 选图 + 一个按钮（全自动，零参数）
-- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（保持画质）
+- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（超大图先自动缩放至 2048px 内）
 - 提取依赖**本机嵌入记录**（最近 100 条）：请在嵌入水印的同一台设备上提取；强鲁棒标识可在任何设备识别出 32 位码
 
 ## 安全模型
 
-- **密码**：嵌入时「高级选项」可设置水印密码（默认 1，与原 Python 库互通）。密码参与水印的随机打乱，**提取方必须使用相同密码**才能还原
+- **密码**：嵌入时「高级选项」可设置水印密码（默认 1）。密码参与水印的随机打乱，**提取方必须使用相同密码**才能还原
 - **本机自动**：密码/长度等参数保存在本机嵌入记录中，本机提取无需手动输入
 - **他人拿到图片**：不知道密码 + 不知道长度/尺寸 → 无法还原文本/Logo 水印；强鲁棒模式只能看到一串 32 位标识码（无本机记录时无意义）
 - **局限（如实说明）**：① DWT 密码是整数种子，短密码可被暴力枚举（建议设较复杂的数字）② 本地记录为明文存储（root 设备可读）③ 跨设备提取需要同一套参数（本机记录不跨设备）
