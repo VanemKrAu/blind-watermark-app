@@ -24,6 +24,12 @@ class MainActivity : FlutterActivity() {
     private var embedSession: OrtSession? = null
     private var extractSession: OrtSession? = null
 
+    // ONNX sessions are NOT thread-safe: serialize all inference on a single
+    // worker thread (embed + extract can otherwise run concurrently from the
+    // two pages and crash).
+    private val inferenceExecutor =
+        java.util.concurrent.Executors.newSingleThreadExecutor()
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // Defensive: mark the app cache dir so ROM galleries never index any
@@ -36,32 +42,47 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 // Heavy ONNX inference must never run on the platform (UI)
                 // thread — it would block rendering and risk an ANR.
-                val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-                executor.execute {
+                inferenceExecutor.execute {
                     try {
                         when (call.method) {
                             "embed" -> {
                                 val img = call.argument<ByteArray>("img")!!
                                 val bits = call.argument<List<Double>>("bits")!!
-                                runOnUiThread { result.success(embed(img, bits)) }
+                                val out = embed(img, bits)
+                                runOnUiThread {
+                                    try { result.success(out) } catch (_: Exception) {}
+                                }
                             }
                             "extract" -> {
                                 val img = call.argument<ByteArray>("img")!!
-                                runOnUiThread { result.success(extract(img)) }
+                                val out = extract(img)
+                                runOnUiThread {
+                                    try { result.success(out) } catch (_: Exception) {}
+                                }
                             }
-                            "modelReady" -> runOnUiThread { result.success(modelReady()) }
+                            "modelReady" -> {
+                                val ready = modelReady()
+                                runOnUiThread {
+                                    try { result.success(ready) } catch (_: Exception) {}
+                                }
+                            }
                             "reloadModels" -> {
                                 reloadModels()
-                                runOnUiThread { result.success(modelReady()) }
+                                val ready = modelReady()
+                                runOnUiThread {
+                                    try { result.success(ready) } catch (_: Exception) {}
+                                }
                             }
-                            else -> runOnUiThread { result.notImplemented() }
+                            else -> runOnUiThread {
+                                try { result.notImplemented() } catch (_: Exception) {}
+                            }
                         }
                     } catch (e: Exception) {
                         runOnUiThread {
-                            result.error("WAM_ERROR", e.message ?: "unknown", null)
+                            try {
+                                result.error("WAM_ERROR", e.message ?: "unknown", null)
+                            } catch (_: Exception) {}
                         }
-                    } finally {
-                        executor.shutdown()
                     }
                 }
             }
@@ -85,9 +106,17 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun modelReady(): Boolean =
-        modelBytes("wam_embedder.onnx") != null &&
-            modelBytes("wam_extractor_int8.onnx") != null
+    /** Lightweight existence check — must NOT read the 95MB model into
+     *  memory every time. */
+    private fun modelReady(): Boolean {
+        return try {
+            assets.open("flutter_assets/assets/onnx/wam_embedder.onnx").close()
+            assets.open("flutter_assets/assets/onnx/wam_extractor_int8.onnx").close()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     private fun reloadModels() {
         embedSession?.close()
@@ -100,7 +129,7 @@ class MainActivity : FlutterActivity() {
         embedSession?.let { return it }
         val env = getEnv()
         val bytes = modelBytes("wam_embedder.onnx")
-            ?: throw IllegalArgumentException("embedder model not found; download it first")
+            ?: throw IllegalArgumentException("embedder model missing from app bundle")
         embedSession = env.createSession(bytes, OrtSession.SessionOptions())
         return embedSession!!
     }
@@ -109,7 +138,7 @@ class MainActivity : FlutterActivity() {
         extractSession?.let { return it }
         val env = getEnv()
         val bytes = modelBytes("wam_extractor_int8.onnx")
-            ?: throw IllegalArgumentException("extractor model not found; download it first")
+            ?: throw IllegalArgumentException("extractor model missing from app bundle")
         extractSession = env.createSession(bytes, OrtSession.SessionOptions())
         return extractSession!!
     }
@@ -261,6 +290,7 @@ class MainActivity : FlutterActivity() {
         embedSession?.close()
         extractSession?.close()
         ortEnv?.close()
+        inferenceExecutor.shutdown()
         super.onDestroy()
     }
 }

@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+﻿import 'dart:convert';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -231,6 +232,16 @@ class _EmbedPageState extends State<EmbedPage> {
           }
         } else {
           // Long text on large image: DWT keeps full resolution.
+          // Capacity check first: text bits must fit the 4x4 block grid.
+          final size = await imageSize(bytes);
+          if (size != null) {
+            final capacity = (size.$1 ~/ 8) * (size.$2 ~/ 8) - 1;
+            final bitLen = utf8.encode(text).length * 8;
+            if (bitLen > capacity) {
+              throw Exception(
+                  '水印超出容量：图片最多容纳约 $capacity bit，当前文本约需 $bitLen bit。请缩短文本或换更大的图片。');
+            }
+          }
           final result = await compute(
             _embedTextIsolate,
             (bytes, text, pwWm, pwImg),
@@ -657,6 +668,7 @@ class _ImagePickerCard extends StatelessWidget {
     );
   }
 }
+
 
 
 
