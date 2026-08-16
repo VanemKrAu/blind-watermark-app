@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.19] - 2026-08-17
+
+### Added
+- 底部新增「**嵌入记录**」tab：查看本机全部嵌入记录（32 位标识码可复制、内容、时间戳、密码）
+- 记录**左滑操作**（QQ 风格）：删除（红）/ 归档（橙）/ 置顶（蓝）；归档记录自动收纳至**二级页面**（入口在列表底部，可取消归档/删除）
+- 记录新增**时间戳**；归档记录不参与自动提取匹配
+
+### Changed
+- **多尝试提取**：WAM 提取依次尝试原图 + 居中裁剪 85%/70%，按位解码置信度（mean |bit margin|）择优——轻度裁剪/带边框图片更易救回
+
 ## [1.1.18] - 2026-08-16
 
 ### Changed

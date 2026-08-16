@@ -39,9 +39,11 @@ public:
     bool embed(const uint8_t* png, size_t pngLen, const float* msg32,
                std::vector<uint8_t>& outPng, std::string& err);
 
-    // Extract 32 bits from a PNG image (stretched to 256x256).
+    // Extract 32 bits from a PNG image (stretched to 256x256). confidence is
+    // the mean |bit margin| over the 32 decoded bits (higher = more reliable;
+    // ~8 for a clean watermark, near 0 for a wrong candidate).
     bool extract(const uint8_t* png, size_t pngLen, std::vector<int>& bits,
-                 std::string& err);
+                 double& confidence, std::string& err);
 
 private:
     std::mutex mu_;  // ORT sessions are not thread-safe; serialize all calls.

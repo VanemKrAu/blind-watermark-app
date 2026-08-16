@@ -9,7 +9,9 @@ import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
 import 'package:gal/gal.dart';
 
 import '../src/app_version.dart';
+import '../src/haptics.dart';
 import '../src/image_utils.dart';
+import '../src/page_header.dart';
 import '../src/pick_bridge.dart';
 import '../src/wam_bridge.dart';
 import '../src/wam_codec.dart';
@@ -286,6 +288,7 @@ class _EmbedPageState extends State<EmbedPage> {
       }
 
       if (mounted) {
+        Haptics.success();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('水印已嵌入')),
         );
@@ -322,6 +325,7 @@ class _EmbedPageState extends State<EmbedPage> {
             'watermarked_${DateTime.now().millisecondsSinceEpoch}.png';
         await Gal.putImageBytes(bytes, name: name);
         if (mounted) {
+          Haptics.success();
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text('已保存到相册')));
         }
@@ -356,6 +360,8 @@ class _EmbedPageState extends State<EmbedPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            const PageHeader(icon: Icons.upload, title: '嵌入水印'),
+            const SizedBox(height: 16),
             _ImagePickerCard(
               bytes: _imageBytes,
               name: _imageName,

@@ -116,10 +116,10 @@ typedef _bwm_wam_embed_dart = int Function(
     Pointer<Utf8> err, int errCap);
 
 typedef _bwm_wam_extract_native = Int32 Function(
-    Pointer<Uint8> png, Size len, Pointer<Uint8> bits,
+    Pointer<Uint8> png, Size len, Pointer<Uint8> bits, Pointer<Float> confidence,
     Pointer<Utf8> err, Size errCap);
 typedef _bwm_wam_extract_dart = int Function(
-    Pointer<Uint8> png, int len, Pointer<Uint8> bits,
+    Pointer<Uint8> png, int len, Pointer<Uint8> bits, Pointer<Float> confidence,
     Pointer<Utf8> err, int errCap);
 
 /// Native bindings for flutter_blind_watermark library

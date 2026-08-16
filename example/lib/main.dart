@@ -6,6 +6,7 @@ import 'package:flutter_blind_watermark/src/blind_watermark_bindings.dart';
 import 'pages/about_page.dart';
 import 'pages/embed_page.dart';
 import 'pages/extract_page.dart';
+import 'pages/history_page.dart';
 
 final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
@@ -147,6 +148,10 @@ class _HomeShellState extends State<HomeShell> {
           ),
           _PageSlot(
             visible: _index == 2,
+            child: HistoryPage(active: _index == 2),
+          ),
+          _PageSlot(
+            visible: _index == 3,
             child: const AboutPage(),
           ),
         ],
@@ -164,6 +169,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.search_outlined),
             selectedIcon: Icon(Icons.search),
             label: '提取水印',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history),
+            label: '嵌入记录',
           ),
           NavigationDestination(
             icon: Icon(Icons.info_outline),
@@ -184,23 +194,21 @@ class _PageSlot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Motion spec (Material 3 fade-through):
-    //   enter:  fade-in + scale 0.96->1, easeOutCubic, 280ms
-    //   exit:   quick fade-out, easeIn, 150ms
+    // Motion spec: 纯渐隐渐显（整页 scale 会触发大子树逐帧重光栅化 → 掉帧，
+    // 故去掉；RepaintBoundary 让 opacity 只做图层合成，不重绘内容）。
+    //   enter: fade-in, easeOutCubic, 220ms
+    //   exit:  quick fade-out, easeIn, 130ms
     //   reduced motion: instant swap.
     final reduce = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     final duration =
-        reduce ? Duration.zero : const Duration(milliseconds: 280);
+        reduce ? Duration.zero : const Duration(milliseconds: 220);
     final exitDuration =
-        reduce ? Duration.zero : const Duration(milliseconds: 150);
+        reduce ? Duration.zero : const Duration(milliseconds: 130);
     return IgnorePointer(
       ignoring: !visible,
-      child: AnimatedOpacity(
-        opacity: visible ? 1 : 0,
-        duration: visible ? duration : exitDuration,
-        curve: visible ? Curves.easeOutCubic : Curves.easeIn,
-        child: AnimatedScale(
-          scale: visible ? 1 : 0.96,
+      child: RepaintBoundary(
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
           duration: visible ? duration : exitDuration,
           curve: visible ? Curves.easeOutCubic : Curves.easeIn,
           child: TickerMode(

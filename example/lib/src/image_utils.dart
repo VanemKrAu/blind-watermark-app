@@ -117,6 +117,44 @@ Future<(int, int)?> imageSize(Uint8List bytes) async {
   }
 }
 
+/// Center-crops [bytes] to [fraction] (0..1) of its own size and re-encodes
+/// to PNG. Used by the WAM multi-attempt extraction (crop variants mimic a
+/// "slightly cropped" image and can rescue borderline decodes).
+Future<Uint8List?> centerCropPng(Uint8List bytes, double fraction) async {
+  try {
+    final codec = await ui.instantiateImageCodec(bytes);
+    try {
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      try {
+        final w = image.width;
+        final h = image.height;
+        final cw = (w * fraction).round();
+        final ch = (h * fraction).round();
+        final src = ui.Rect.fromLTWH(
+            (w - cw) / 2, (h - ch) / 2, cw.toDouble(), ch.toDouble());
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawImageRect(image, src, ui.Rect.fromLTWH(0, 0, cw.toDouble(), ch.toDouble()), ui.Paint()..filterQuality = ui.FilterQuality.medium);
+        final picture = recorder.endRecording();
+        final out = await picture.toImage(cw, ch);
+        try {
+          final data = await out.toByteData(format: ui.ImageByteFormat.png);
+          return data?.buffer.asUint8List();
+        } finally {
+          out.dispose();
+        }
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Downscales [bytes] so that its long edge is <= [maxDim].
 ///
 /// Never upscales: images already within [maxDim] are returned unchanged

@@ -500,7 +500,8 @@ bool WamEngine::embed(const uint8_t* png, size_t pngLen, const float* msg32,
 }
 
 bool WamEngine::extract(const uint8_t* png, size_t pngLen,
-                        std::vector<int>& bits, std::string& err) {
+                        std::vector<int>& bits, double& confidence,
+                        std::string& err) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!ensureExtractSessionLocked(err)) return false;
 
@@ -556,6 +557,12 @@ bool WamEngine::extract(const uint8_t* png, size_t pngLen,
                     mask[i] =
                         1.0f / (1.0f + std::exp(-outData[i])) > 0.5f;
                 }
+                // Confidence = mean |bit margin|: for each of the 32 bit
+                // channels, the mean logit over watermarked pixels, absolute.
+                // Clean watermarks push logits far from 0 (~8), while a wrong
+                // candidate (cropped/mixed content) gives margins near 0 —
+                // the app picks the attempt with the highest value.
+                double confSum = 0.0;
                 bits.clear();
                 for (int k = 1; k <= 32; ++k) {
                     const float* ch = outData + static_cast<size_t>(k) * hw;
@@ -567,8 +574,11 @@ bool WamEngine::extract(const uint8_t* png, size_t pngLen,
                             n++;
                         }
                     }
-                    bits.push_back((n > 0 && sum / n > 0.0) ? 1 : 0);
+                    double m = (n > 0) ? sum / n : 0.0;
+                    bits.push_back(m > 0.0 ? 1 : 0);
+                    confSum += std::fabs(m);
                 }
+                confidence = confSum / 32.0;
                 ok = true;
             }
         }
@@ -618,12 +628,14 @@ BWM_EXPORT int bwm_wam_embed(const uint8_t* png, size_t len, const float* msg,
     return 0;
 }
 
-// Returns 0 on success; bits must point to 32 bytes.
+// Returns 0 on success; bits must point to 32 bytes; confidence (0..1) is the
+// fraction of pixels the model considers watermarked (may be nullptr).
 BWM_EXPORT int bwm_wam_extract(const uint8_t* png, size_t len, uint8_t* bits,
-                               char* err, size_t errCap) {
+                               float* confidence, char* err, size_t errCap) {
     std::vector<int> b;
+    double conf = 0.0;
     std::string e;
-    if (!g_wam.extract(png, len, b, e)) {
+    if (!g_wam.extract(png, len, b, conf, e)) {
         if (err && errCap > 0) {
             snprintf(err, errCap, "%s", e.empty() ? "wam extract failed" : e.c_str());
         }
@@ -632,6 +644,7 @@ BWM_EXPORT int bwm_wam_extract(const uint8_t* png, size_t len, uint8_t* bits,
     for (int i = 0; i < 32 && i < static_cast<int>(b.size()); ++i) {
         bits[i] = static_cast<uint8_t>(b[i] ? 1 : 0);
     }
+    if (confidence != nullptr) *confidence = static_cast<float>(conf);
     return 0;
 }
 

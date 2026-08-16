@@ -8,7 +8,9 @@ import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
 import 'package:gal/gal.dart';
 
 import '../src/app_version.dart';
+import '../src/haptics.dart';
 import '../src/image_utils.dart';
+import '../src/page_header.dart';
 import '../src/pick_bridge.dart';
 import '../src/wam_bridge.dart';
 import '../src/wam_codec.dart';
@@ -156,7 +158,7 @@ class _ExtractPageState extends State<ExtractPage> {
 
     try {
       final bytes = _imageBytes!;
-      final history = await WmHistory.all();
+      final history = await WmHistory.active();
       var found = false;
       var wamUnavailable = false;
       var dwtSkippedBig = false;
@@ -223,11 +225,35 @@ class _ExtractPageState extends State<ExtractPage> {
           }
         } else {
           if (mounted) setState(() => _statusText = '正在识别强鲁棒水印…');
-          final (ok, bits) =
-              await compute(wamExtractIsolate, (bytes, modelsDir));
-          if (ok) {
-            final code = WamCodec.bitsToStr(bits);
-            final match = await WmHistory.matchWam(bits, 4);
+          // Multi-attempt extraction: try the original plus center-crop
+          // variants (85% / 70%) and keep the result with the highest mask
+          // confidence. This rescues mildly cropped / border-added images
+          // that a single full-image pass would miss. Each attempt takes
+          // ~0.3s; three attempts stay well under the progress feel.
+          final attempts = <(Uint8List, double)>[
+            for (final f in const [1.0, 0.85, 0.7])
+              if (f == 1.0)
+                (bytes, 0.0)
+              else
+                (await centerCropPng(bytes, f) ?? bytes, 0.0),
+          ];
+          List<int>? bestBits;
+          var bestConf = -1.0;
+          var attemptsOk = 0;
+          for (final (cand, _) in attempts) {
+            final (ok, bits, conf) =
+                await compute(wamExtractIsolate, (cand, modelsDir));
+            if (ok) {
+              attemptsOk++;
+              if (conf > bestConf) {
+                bestConf = conf;
+                bestBits = bits;
+              }
+            }
+          }
+          if (attemptsOk > 0 && bestBits != null) {
+            final code = WamCodec.bitsToStr(bestBits);
+            final match = await WmHistory.matchWam(bestBits, 4);
             if (match != null) {
               found = true;
               if (mounted) {
@@ -243,9 +269,9 @@ class _ExtractPageState extends State<ExtractPage> {
               // matches.
               wamCodeOnly = code;
             }
-          } else {
-            wamUnavailable = true;
           }
+          // NOTE: 解码失败不置 wamUnavailable —— 模型存在且正常，只是图片
+          // 未检测到水印（此前误标导致提示「模型不可用」，语义错误）。
         }
       }
 
@@ -302,6 +328,8 @@ class _ExtractPageState extends State<ExtractPage> {
         }
       }
 
+      if (found) Haptics.success();
+
       if (!found && mounted) {
         if (wamCodeOnly != null) {
           setState(() {
@@ -346,6 +374,7 @@ class _ExtractPageState extends State<ExtractPage> {
             'extracted_logo_${DateTime.now().millisecondsSinceEpoch}.png';
         await Gal.putImageBytes(bytes, name: name);
         if (mounted) {
+          Haptics.success();
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text('已保存到相册')));
         }
@@ -380,6 +409,8 @@ class _ExtractPageState extends State<ExtractPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            const PageHeader(icon: Icons.manage_search, title: '提取水印'),
+            const SizedBox(height: 16),
             Card(
               clipBehavior: Clip.antiAlias,
               child: InkWell(
@@ -568,12 +599,21 @@ class _ExtractPageState extends State<ExtractPage> {
             ),
             if (_statusText != null) ...[
               const SizedBox(height: 8),
-              Text(
-                _statusText!,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: colorScheme.onSurfaceVariant,
-                  fontSize: 12,
+              // 分步状态提示：文字切换淡入淡出（不跳动）
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, animation) =>
+                    FadeTransition(opacity: animation, child: child),
+                child: Text(
+                  _statusText!,
+                  key: ValueKey(_statusText),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
                 ),
               ),
             ],
