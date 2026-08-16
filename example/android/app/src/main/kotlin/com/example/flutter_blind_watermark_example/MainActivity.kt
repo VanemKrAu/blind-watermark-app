@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -121,6 +122,15 @@ class MainActivity : FlutterActivity() {
         reportShownThisProcess = true
         try {
             val sb = StringBuilder()
+            sb.append("DEVICE: ")
+                .append(Build.MANUFACTURER)
+                .append(" ")
+                .append(Build.MODEL)
+                .append(" | Android ")
+                .append(Build.VERSION.RELEASE)
+                .append(" (SDK ")
+                .append(Build.VERSION.SDK_INT)
+                .append(")\n")
             for (f in listOf(File(filesDir, "crash.txt"), File(cacheDir, "crash.txt"))) {
                 if (f.exists()) {
                     sb.append(f.readText()).append("\n")

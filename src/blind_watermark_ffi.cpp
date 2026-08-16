@@ -37,30 +37,117 @@ namespace {
 char g_crash_log[1024] = {0};
 
 #ifndef _WIN32
-void crash_handler(int sig, siginfo_t* /*si*/, void* uc) {
-    // Async-signal-safe ONLY: open/write/close/snprintf. No dladdr, no
-    // malloc — the addresses are resolved by bwm_symbolize() at next launch
-    // (normal context), where dladdr is safe.
+namespace {
+
+uintptr_t crash_parse_hex(const char* a, const char* b) {
+    uintptr_t v = 0;
+    for (const char* p = a; p < b; ++p) {
+        char c = *p;
+        v = (v << 4) | static_cast<uintptr_t>(
+            c >= '0' && c <= '9' ? c - '0' :
+            c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+            c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
+    }
+    return v;
+}
+
+// Finds the map range containing addr; fills *start (map base), *isExec
+// (perms contain 'x') and the pathname. Returns false when not found.
+bool crash_lookup_map(uintptr_t addr, const char* maps, size_t len,
+                      uintptr_t* start, bool* isExec,
+                      char* out, size_t outlen) {
+    const char* p = maps;
+    const char* end = maps + len;
+    while (p < end) {
+        const char* nl = static_cast<const char*>(memchr(p, '\n', end - p));
+        if (!nl) nl = end;
+        const char* dash = static_cast<const char*>(memchr(p, '-', nl - p));
+        if (dash && dash > p) {
+            uintptr_t s = crash_parse_hex(p, dash);
+            const char* e1 = dash + 1;
+            const char* e2 = e1;
+            while (e2 < nl && *e2 != ' ') e2++;
+            uintptr_t e = crash_parse_hex(e1, e2);
+            if (addr >= s && addr < e) {
+                if (start) *start = s;
+                bool exec = false;
+                int spaces = 0;
+                const char* path = nullptr;
+                for (const char* t = e2; t < nl; ++t) {
+                    if (*t == ' ') {
+                        spaces++;
+                        if (spaces == 1) {
+                            for (const char* u = t + 1; u < nl && *u != ' '; ++u) {
+                                if (*u == 'x') exec = true;
+                            }
+                        }
+                        if (spaces == 5) { path = t + 1; break; }
+                    }
+                }
+                if (isExec) *isExec = exec;
+                if (path && path < nl) {
+                    size_t plen = static_cast<size_t>(nl - path);
+                    if (plen > outlen - 1) plen = outlen - 1;
+                    memcpy(out, path, plen);
+                    out[plen] = 0;
+                    return true;
+                }
+                return true;
+            }
+        }
+        p = nl + 1;
+    }
+    return false;
+}
+
+// Writes "  <addr> in <module>+0x<off>" (or "in ?") for one address.
+void crash_write_addr(int fd, char* buf, size_t buflen, uintptr_t addr,
+                      const char* maps, size_t mapslen) {
+    if (addr == 0) return;
+    char mod[256];
+    uintptr_t base = 0;
+    bool exec = false;
+    int n;
+    if (crash_lookup_map(addr, maps, mapslen, &base, &exec, mod, sizeof(mod))) {
+        n = snprintf(buf, buflen, "  %s 0x%llx in %s+0x%llx\n",
+                     exec ? "X" : " ",
+                     static_cast<unsigned long long>(addr), mod,
+                     static_cast<unsigned long long>(addr - base));
+    } else {
+        n = snprintf(buf, buflen, "  0x%llx in ?\n",
+                     static_cast<unsigned long long>(addr));
+    }
+    write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+}
+
+}  // namespace
+
+void crash_handler(int sig, siginfo_t* si, void* uc) {
+    // Async-signal-safe ONLY: open/write/close/snprintf/memchr + plain
+    // integer parsing. No dladdr, no malloc. Function names are resolved by
+    // bwm_symbolize() at next launch; module attribution is done HERE by
+    // parsing /proc/self/maps (read-only file reads are safe).
     if (g_crash_log[0] != 0) {
         int fd = open(g_crash_log, O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (fd >= 0) {
             char buf[512];
-            // PC/LR from the crash site (signal handler runs on the faulting
-            // thread; ucontext carries its registers).
-            uintptr_t pc = 0, lr = 0, fp = 0;
+            uintptr_t pc = 0, lr = 0, fp = 0, sp = 0;
 #if defined(__aarch64__)
             ucontext_t* u = static_cast<ucontext_t*>(uc);
             pc = u->uc_mcontext.pc;
+            sp = u->uc_mcontext.sp;
             lr = u->uc_mcontext.regs[30];
             fp = u->uc_mcontext.regs[29];
 #elif defined(__arm__)
             ucontext_t* u = static_cast<ucontext_t*>(uc);
             pc = u->uc_mcontext.arm_pc;
+            sp = u->uc_mcontext.arm_sp;
             lr = u->uc_mcontext.arm_lr;
             fp = u->uc_mcontext.arm_fp;
 #elif defined(__x86_64__)
             ucontext_t* u = static_cast<ucontext_t*>(uc);
             pc = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RIP]);
+            sp = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RSP]);
             lr = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RBP]);
             fp = lr;
 #endif
@@ -84,29 +171,85 @@ void crash_handler(int sig, siginfo_t* /*si*/, void* uc) {
                 }
             }
             n = snprintf(buf, sizeof(buf),
-                         "NATIVE CRASH: signal=%d at %lld tid=%ld thread=%s\nPC=0x%llx\nLR=0x%llx\n",
-                         sig, static_cast<long long>(time(nullptr)),
+                         "NATIVE CRASH: signal=%d code=%d at %lld tid=%ld thread=%s\n"
+                         "PC=0x%llx\nLR=0x%llx\nSP=0x%llx\nFP=0x%llx\n",
+                         sig, si ? si->si_code : 0,
+                         static_cast<long long>(time(nullptr)),
                          static_cast<long>(syscall(SYS_gettid)), comm,
                          static_cast<unsigned long long>(pc),
-                         static_cast<unsigned long long>(lr));
+                         static_cast<unsigned long long>(lr),
+                         static_cast<unsigned long long>(sp),
+                         static_cast<unsigned long long>(fp));
             write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
 
-            // Frame-pointer stack walk: PC/LR are both inside abort() itself
-            // (abort raises SIGABRT synchronously), so the caller of abort is
-            // one frame up. With SIGSEGV/SIGBUS masked (sa_mask), a faulting
-            // read leaves the destination unchanged (0) and the guards break
-            // the loop, so a corrupt chain cannot recurse.
-            // aarch64 frame: [fp+0] = saved fp, [fp+8] = saved lr.
-            for (int i = 0; i < 20 && fp > 0x10000; ++i) {
-                uintptr_t saved_lr =
-                    *reinterpret_cast<const uintptr_t*>(fp + 8);
-                uintptr_t saved_fp =
-                    *reinterpret_cast<const uintptr_t*>(fp);
-                n = snprintf(buf, sizeof(buf), "F%d=0x%llx\n", i,
-                             static_cast<unsigned long long>(saved_lr));
+            // Full register dump (aarch64).
+#if defined(__aarch64__)
+            for (int i = 0; i < 30; ++i) {
+                n = snprintf(buf, sizeof(buf), "X%d=0x%llx\n", i,
+                             static_cast<unsigned long long>(u->uc_mcontext.regs[i]));
                 write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
-                if (saved_fp <= fp || saved_fp > fp + 0x400000) break;
-                fp = saved_fp;
+            }
+#endif
+
+            // Module map (parsed once, reused for every address).
+            char maps[98304];
+            size_t mapslen = 0;
+            {
+                int mfd = open("/proc/self/maps", O_RDONLY);
+                if (mfd >= 0) {
+                    ssize_t r = read(mfd, maps, sizeof(maps) - 1);
+                    close(mfd);
+                    if (r > 0) {
+                        mapslen = static_cast<size_t>(r);
+                        maps[mapslen] = 0;
+                    }
+                }
+            }
+
+            n = snprintf(buf, sizeof(buf), "PC:");
+            write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+            crash_write_addr(fd, buf, sizeof(buf), pc, maps, mapslen);
+            n = snprintf(buf, sizeof(buf), "LR:");
+            write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+            crash_write_addr(fd, buf, sizeof(buf), lr, maps, mapslen);
+
+            // Call chain: frame-pointer walk first...
+            uintptr_t chain[64];
+            int nchain = 0;
+            uintptr_t f = fp;
+            for (int i = 0; i < 64 && f > 0x10000; ++i) {
+                uintptr_t saved_lr = *reinterpret_cast<const uintptr_t*>(f + 8);
+                uintptr_t saved_fp = *reinterpret_cast<const uintptr_t*>(f);
+                if (nchain < 64) chain[nchain++] = saved_lr;
+                if (saved_fp <= f || saved_fp > f + 0x400000) break;
+                f = saved_fp;
+            }
+            // ...then a stack scan for return addresses in executable maps
+            // (covers code compiled without frame pointers). Faulting reads
+            // leave the destination unchanged, so garbage terminates safely.
+            for (uintptr_t a = sp; a < sp + 0x10000 && nchain < 64; a += 8) {
+                uintptr_t w = *reinterpret_cast<const uintptr_t*>(a);
+                if (w < 0x10000 || w > 0x0000ffffffffffffULL) continue;
+                uintptr_t base = 0;
+                bool exec = false;
+                char mod[256];
+                if (!crash_lookup_map(w, maps, mapslen, &base, &exec, mod,
+                                      sizeof(mod)) || !exec) {
+                    continue;
+                }
+                bool dup = false;
+                for (int i = 0; i < nchain; ++i) {
+                    if (chain[i] == w) { dup = true; break; }
+                }
+                if (!dup) chain[nchain++] = w;
+            }
+            n = snprintf(buf, sizeof(buf), "FRAMES=%d\n", nchain);
+            write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+            for (int i = 0; i < nchain; ++i) {
+                n = snprintf(buf, sizeof(buf), "F%d=0x%llx\n", i,
+                             static_cast<unsigned long long>(chain[i]));
+                write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+                crash_write_addr(fd, buf, sizeof(buf), chain[i], maps, mapslen);
             }
             close(fd);
         }
