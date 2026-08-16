@@ -622,7 +622,7 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.5',
+              '盲水印 v1.1.6',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,

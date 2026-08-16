@@ -8,7 +8,10 @@
 #include <memory>
 #include <string>
 #ifndef _WIN32
+#include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
 #include <unistd.h>
 #endif
 
@@ -34,15 +37,51 @@ namespace {
 char g_crash_log[1024] = {0};
 
 #ifndef _WIN32
-void crash_handler(int sig) {
+void crash_handler(int sig, siginfo_t* /*si*/, void* uc) {
     if (g_crash_log[0] != 0) {
         int fd = open(g_crash_log, O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (fd >= 0) {
-            char buf[256];
+            char buf[512];
+            // PC/LR from the crash site (signal handler runs on the faulting
+            // thread; ucontext carries its registers).
+            uintptr_t pc = 0, lr = 0;
+#if defined(__aarch64__)
+            ucontext_t* u = static_cast<ucontext_t*>(uc);
+            pc = u->uc_mcontext.pc;
+            lr = u->uc_mcontext.regs[30];
+#elif defined(__arm__)
+            ucontext_t* u = static_cast<ucontext_t*>(uc);
+            pc = u->uc_mcontext.arm_pc;
+            lr = u->uc_mcontext.arm_lr;
+#elif defined(__x86_64__)
+            ucontext_t* u = static_cast<ucontext_t*>(uc);
+            pc = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RIP]);
+            lr = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RBP]);
+#endif
             int n = snprintf(buf, sizeof(buf),
-                             "NATIVE CRASH: signal=%d at %lld\n",
-                             sig, static_cast<long long>(time(nullptr)));
+                             "NATIVE CRASH: signal=%d at %lld tid=%ld\nPC=%p\nLR=%p\n",
+                             sig, static_cast<long long>(time(nullptr)),
+                             static_cast<long>(syscall(SYS_gettid)),
+                             reinterpret_cast<void*>(pc),
+                             reinterpret_cast<void*>(lr));
             write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+            // Resolve the crashing module/function via dladdr (read-only
+            // lookup; safe in practice from a signal handler). For SIGABRT,
+            // PC is inside abort() and LR is whoever called it.
+            const void* addrs[2] = {reinterpret_cast<void*>(pc),
+                                    reinterpret_cast<void*>(lr)};
+            for (const void* a : addrs) {
+                Dl_info info;
+                if (a != nullptr && dladdr(a, &info) != 0 &&
+                    info.dli_fname != nullptr) {
+                    n = snprintf(buf, sizeof(buf), "  %p in %s%s%s%s\n", a,
+                                 info.dli_fname,
+                                 info.dli_sname ? " (" : "",
+                                 info.dli_sname ? info.dli_sname : "",
+                                 info.dli_sname ? ")" : "");
+                    write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
+                }
+            }
             close(fd);
         }
     }
@@ -54,7 +93,8 @@ struct CrashGuard {
     CrashGuard() {
         struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = crash_handler;
+        sa.sa_sigaction = crash_handler;
+        sa.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &sa, nullptr);
         sigaction(SIGABRT, &sa, nullptr);
         sigaction(SIGBUS, &sa, nullptr);

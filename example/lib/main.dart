@@ -1,10 +1,57 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'pages/embed_page.dart';
 import 'pages/extract_page.dart';
 
+final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Native crash capture (MainActivity + blind_watermark_ffi) writes a report
+  // on a previous crash; show it in a Material 3 dialog matching the app UI.
+  const MethodChannel('wam').setMethodCallHandler((call) async {
+    if (call.method == 'onCrashReport') {
+      final report = (call.arguments as String?) ?? '';
+      if (report.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showCrashReport(report);
+        });
+      }
+    }
+    return null;
+  });
   runApp(const BlindWatermarkApp());
+}
+
+Future<void> _showCrashReport(String report) async {
+  final context = _navigatorKey.currentContext;
+  if (context == null) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('上次运行发生崩溃'),
+      content: SingleChildScrollView(
+        child: SelectableText(
+          report,
+          style: const TextStyle(fontSize: 13, fontFamily: 'monospace'),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: report));
+            if (ctx.mounted) Navigator.of(ctx).pop();
+          },
+          child: const Text('复制报告'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    ),
+  );
 }
 
 class BlindWatermarkApp extends StatelessWidget {
@@ -15,6 +62,7 @@ class BlindWatermarkApp extends StatelessWidget {
     return MaterialApp(
       title: '盲水印',
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navigatorKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
       ),

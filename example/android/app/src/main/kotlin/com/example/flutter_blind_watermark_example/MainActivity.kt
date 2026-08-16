@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
     private var extractSession: OrtSession? = null
 
     private var pendingPickResult: MethodChannel.Result? = null
+    private var wamChannel: MethodChannel? = null
 
     /**
      * Captures uncaught Java/Kotlin exceptions (e.g. OOM, UnsatisfiedLinkError
@@ -113,19 +114,32 @@ class MainActivity : FlutterActivity() {
             }
             if (sb.isNotEmpty()) {
                 val report = sb.toString()
-                runOnUiThread {
-                    try {
-                        val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                        AlertDialog.Builder(this)
-                            .setTitle("上次运行发生崩溃")
-                            .setMessage(report)
-                            .setPositiveButton("复制报告") { _, _ ->
-                                cb.setPrimaryClip(ClipData.newPlainText("crash", report))
-                            }
-                            .setNegativeButton("关闭", null)
-                            .show()
-                    } catch (_: Exception) {}
-                }
+                // Surface it through Flutter (Material 3 dialog, consistent
+                // with the app UI). Delayed so the Dart side has time to
+                // register its channel handler; system AlertDialog as fallback.
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    val ch = wamChannel
+                    var posted = false
+                    if (ch != null) {
+                        try {
+                            ch.invokeMethod("onCrashReport", report)
+                            posted = true
+                        } catch (_: Exception) {}
+                    }
+                    if (!posted) {
+                        try {
+                            val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                            AlertDialog.Builder(this)
+                                .setTitle("上次运行发生崩溃")
+                                .setMessage(report)
+                                .setPositiveButton("复制报告") { _, _ ->
+                                    cb.setPrimaryClip(ClipData.newPlainText("crash", report))
+                                }
+                                .setNegativeButton("关闭", null)
+                                .show()
+                        } catch (_: Exception) {}
+                    }
+                }, 1500)
             }
         } catch (_: Exception) {}
     }
@@ -170,8 +184,9 @@ class MainActivity : FlutterActivity() {
                 if (!nomedia.exists()) nomedia.createNewFile()
             }
         } catch (_: Exception) {}
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-            .setMethodCallHandler { call, result ->
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        wamChannel = channel
+        channel.setMethodCallHandler { call, result ->
                 // Heavy ONNX inference must never run on the platform (UI)
                 // thread — it would block rendering and risk an ANR.
                 try {
