@@ -36,6 +36,7 @@ class MainActivity : FlutterActivity() {
 
     private var pendingPickResult: MethodChannel.Result? = null
     private var wamChannel: MethodChannel? = null
+    private var dartReadyFlag = false
 
     /**
      * Captures uncaught Java/Kotlin exceptions (e.g. OOM, UnsatisfiedLinkError
@@ -115,31 +116,28 @@ class MainActivity : FlutterActivity() {
             if (sb.isNotEmpty()) {
                 val report = sb.toString()
                 // Surface it through Flutter (Material 3 dialog, consistent
-                // with the app UI). Delayed so the Dart side has time to
-                // register its channel handler; system AlertDialog as fallback.
+                // with the app UI) once the Dart side is ready; the system
+                // AlertDialog is the fallback if Flutter never becomes ready.
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                     val ch = wamChannel
-                    var posted = false
-                    if (ch != null) {
+                    if (ch != null && dartReadyFlag) {
                         try {
                             ch.invokeMethod("onCrashReport", report)
-                            posted = true
+                            return@postDelayed
                         } catch (_: Exception) {}
                     }
-                    if (!posted) {
-                        try {
-                            val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                            AlertDialog.Builder(this)
-                                .setTitle("上次运行发生崩溃")
-                                .setMessage(report)
-                                .setPositiveButton("复制报告") { _, _ ->
-                                    cb.setPrimaryClip(ClipData.newPlainText("crash", report))
-                                }
-                                .setNegativeButton("关闭", null)
-                                .show()
-                        } catch (_: Exception) {}
-                    }
-                }, 1500)
+                    try {
+                        val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                        AlertDialog.Builder(this)
+                            .setTitle("上次运行发生崩溃")
+                            .setMessage(report)
+                            .setPositiveButton("复制报告") { _, _ ->
+                                cb.setPrimaryClip(ClipData.newPlainText("crash", report))
+                            }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    } catch (_: Exception) {}
+                }, 3000)
             }
         } catch (_: Exception) {}
     }
@@ -193,6 +191,12 @@ class MainActivity : FlutterActivity() {
                     executor().execute {
                         try {
                             when (call.method) {
+                                // Dart signals it has registered its handler
+                                // (set after the Flutter side is ready).
+                                "dartReady" -> {
+                                    dartReadyFlag = true
+                                    result.success(null)
+                                }
                                 // Pick an image and read the content URI bytes
                                 // DIRECTLY into memory — no cache copy, no disk
                                 // write — so ROM galleries can never index a

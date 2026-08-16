@@ -1,12 +1,14 @@
+import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_blind_watermark/src/blind_watermark_bindings.dart';
 
 import 'pages/embed_page.dart';
 import 'pages/extract_page.dart';
 
 final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Native crash capture (MainActivity + blind_watermark_ffi) writes a report
   // on a previous crash; show it in a Material 3 dialog matching the app UI.
@@ -14,14 +16,46 @@ void main() {
     if (call.method == 'onCrashReport') {
       final report = (call.arguments as String?) ?? '';
       if (report.isNotEmpty) {
+        final enriched = _enrichReport(report);
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _showCrashReport(report);
+          _showCrashReport(enriched);
         });
       }
     }
     return null;
   });
+  // Tell the native side the handler is registered (crash report delivery).
+  try {
+    await const MethodChannel('wam').invokeMethod('dartReady');
+  } catch (_) {}
   runApp(const BlindWatermarkApp());
+}
+
+/// Resolves a crash PC/LR address to "module (symbol)" via dladdr, called in
+/// normal context (the signal handler itself only records raw addresses).
+String? _symbolize(int address) {
+  try {
+    final ptr = BlindWatermarkBindings.instance.bwm_symbolize(address);
+    if (ptr.address == 0) return null;
+    return ptr.toDartString();
+  } catch (_) {
+    return null;
+  }
+}
+
+String _enrichReport(String report) {
+  final out = <String>[];
+  for (final line in report.split('\n')) {
+    final m = RegExp(r'^(PC|LR)=0x([0-9a-fA-F]+)').firstMatch(line);
+    if (m != null) {
+      final addr = int.tryParse(m.group(2)!, radix: 16) ?? 0;
+      final sym = _symbolize(addr);
+      out.add('$line  ->  ${sym ?? '?'}');
+    } else {
+      out.add(line);
+    }
+  }
+  return out.join('\n');
 }
 
 Future<void> _showCrashReport(String report) async {

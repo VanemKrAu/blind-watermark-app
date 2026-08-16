@@ -1,4 +1,4 @@
-﻿// ignore_for_file: non_constant_identifier_names, camel_case_types
+// ignore_for_file: non_constant_identifier_names, camel_case_types
 
 import 'dart:ffi';
 import 'dart:io';
@@ -99,6 +99,9 @@ typedef _bwm_get_last_error_dart = Pointer<Utf8> Function(BWMHandle handle);
 typedef _bwm_get_version_native = Pointer<Utf8> Function();
 typedef _bwm_get_version_dart = Pointer<Utf8> Function();
 
+typedef _bwm_symbolize_native = Pointer<Utf8> Function(Uint64 addr);
+typedef _bwm_symbolize_dart = Pointer<Utf8> Function(int addr);
+
 /// Native bindings for flutter_blind_watermark library
 class BlindWatermarkBindings {
   final DynamicLibrary _lib;
@@ -125,6 +128,7 @@ class BlindWatermarkBindings {
   late final _bwm_get_error_message_dart bwm_get_error_message;
   late final _bwm_get_last_error_dart bwm_get_last_error;
   late final _bwm_get_version_dart bwm_get_version;
+  late final _bwm_symbolize_dart bwm_symbolize;
 
   BlindWatermarkBindings(this._lib) {
     bwm_create = _lib.lookupFunction<_bwm_create_native, _bwm_create_dart>('bwm_create');
@@ -161,6 +165,7 @@ class BlindWatermarkBindings {
     bwm_get_last_error =
         _lib.lookupFunction<_bwm_get_last_error_native, _bwm_get_last_error_dart>('bwm_get_last_error');
     bwm_get_version = _lib.lookupFunction<_bwm_get_version_native, _bwm_get_version_dart>('bwm_get_version');
+    bwm_symbolize = _lib.lookupFunction<_bwm_symbolize_native, _bwm_symbolize_dart>('bwm_symbolize');
   }
 
   /// Load the native library

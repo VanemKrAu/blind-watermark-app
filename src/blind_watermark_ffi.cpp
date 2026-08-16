@@ -38,6 +38,9 @@ char g_crash_log[1024] = {0};
 
 #ifndef _WIN32
 void crash_handler(int sig, siginfo_t* /*si*/, void* uc) {
+    // Async-signal-safe ONLY: open/write/close/snprintf. No dladdr, no
+    // malloc — the addresses are resolved by bwm_symbolize() at next launch
+    // (normal context), where dladdr is safe.
     if (g_crash_log[0] != 0) {
         int fd = open(g_crash_log, O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (fd >= 0) {
@@ -59,29 +62,12 @@ void crash_handler(int sig, siginfo_t* /*si*/, void* uc) {
             lr = static_cast<uintptr_t>(u->uc_mcontext.gregs[REG_RBP]);
 #endif
             int n = snprintf(buf, sizeof(buf),
-                             "NATIVE CRASH: signal=%d at %lld tid=%ld\nPC=%p\nLR=%p\n",
+                             "NATIVE CRASH: signal=%d at %lld tid=%ld\nPC=0x%llx\nLR=0x%llx\n",
                              sig, static_cast<long long>(time(nullptr)),
                              static_cast<long>(syscall(SYS_gettid)),
-                             reinterpret_cast<void*>(pc),
-                             reinterpret_cast<void*>(lr));
+                             static_cast<unsigned long long>(pc),
+                             static_cast<unsigned long long>(lr));
             write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
-            // Resolve the crashing module/function via dladdr (read-only
-            // lookup; safe in practice from a signal handler). For SIGABRT,
-            // PC is inside abort() and LR is whoever called it.
-            const void* addrs[2] = {reinterpret_cast<void*>(pc),
-                                    reinterpret_cast<void*>(lr)};
-            for (const void* a : addrs) {
-                Dl_info info;
-                if (a != nullptr && dladdr(a, &info) != 0 &&
-                    info.dli_fname != nullptr) {
-                    n = snprintf(buf, sizeof(buf), "  %p in %s%s%s%s\n", a,
-                                 info.dli_fname,
-                                 info.dli_sname ? " (" : "",
-                                 info.dli_sname ? info.dli_sname : "",
-                                 info.dli_sname ? ")" : "");
-                    write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
-                }
-            }
             close(fd);
         }
     }
@@ -515,6 +501,29 @@ BWM_EXPORT const char* bwm_get_error_message(int result) {
 BWM_EXPORT const char* bwm_get_version() {
     return "0.0.1";
 }
+
+#ifndef _WIN32
+// Resolve an address to "module (symbol)" for crash reports. dladdr is NOT
+// async-signal-safe, so it is only called from normal context (next launch,
+// from Dart) — never from the signal handler.
+BWM_EXPORT const char* bwm_symbolize(uintptr_t addr) {
+    static thread_local std::string buf;
+    buf.clear();
+    Dl_info info;
+    if (addr != 0 && dladdr(reinterpret_cast<void*>(addr), &info) != 0 &&
+        info.dli_fname != nullptr) {
+        buf = info.dli_fname;
+        if (info.dli_sname != nullptr) {
+            buf += " (";
+            buf += info.dli_sname;
+            buf += ")";
+        }
+    } else {
+        buf = "?";
+    }
+    return buf.c_str();
+}
+#endif
 
 } // extern "C"
 
