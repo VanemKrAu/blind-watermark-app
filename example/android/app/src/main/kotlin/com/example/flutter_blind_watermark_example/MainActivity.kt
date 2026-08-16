@@ -3,8 +3,10 @@ package com.example.flutter_blind_watermark_example
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -22,6 +24,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "wam"
         private const val IMG_SIZE = 256
+        private const val PICK_IMAGE_REQ = 0x4147 // "AG"
         // ImageNet stats matching the WAM transforms
         private val MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
         private val STD = floatArrayOf(0.229f, 0.224f, 0.225f)
@@ -30,6 +33,8 @@ class MainActivity : FlutterActivity() {
     private var ortEnv: OrtEnvironment? = null
     private var embedSession: OrtSession? = null
     private var extractSession: OrtSession? = null
+
+    private var pendingPickResult: MethodChannel.Result? = null
 
     /**
      * Captures uncaught Java/Kotlin exceptions (e.g. OOM, UnsatisfiedLinkError
@@ -51,6 +56,49 @@ class MainActivity : FlutterActivity() {
                 prev?.uncaughtException(thread, throwable)
             }
         } catch (_: Exception) {}
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PICK_IMAGE_REQ) return
+        val res = pendingPickResult ?: return
+        pendingPickResult = null
+        if (resultCode != RESULT_OK || data?.data == null) {
+            // User cancelled — null means "no image picked".
+            runOnUiThread { try { res.success(null) } catch (_: Exception) {} }
+            return
+        }
+        val uri = data.data!!
+        val name = queryDisplayName(uri) ?: "image"
+        Thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                runOnUiThread {
+                    try {
+                        if (bytes == null) {
+                            res.error("PICK_ERROR", "cannot read image", null)
+                        } else {
+                            res.success(mapOf<String, Any>("bytes" to bytes, "name" to name))
+                        }
+                    } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    try { res.error("PICK_ERROR", e.message ?: "unknown", null) } catch (_: Exception) {}
+                }
+            }
+        }.start()
+    }
+
+    private fun queryDisplayName(uri: android.net.Uri): String? {
+        return try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** Shows any crash report written by the previous run, then deletes it. */
@@ -130,6 +178,34 @@ class MainActivity : FlutterActivity() {
                     executor().execute {
                         try {
                             when (call.method) {
+                                // Pick an image and read the content URI bytes
+                                // DIRECTLY into memory — no cache copy, no disk
+                                // write — so ROM galleries can never index a
+                                // transient file (file_picker writes one even
+                                // with withData:true; some ROMs index it).
+                                "pickImage" -> {
+                                    val res = result
+                                    pendingPickResult = res
+                                    runOnUiThread {
+                                        try {
+                                            startActivityForResult(
+                                                Intent.createChooser(
+                                                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                                                        type = "image/*"
+                                                        addCategory(Intent.CATEGORY_OPENABLE)
+                                                    },
+                                                    null
+                                                ),
+                                                PICK_IMAGE_REQ
+                                            )
+                                        } catch (e: Exception) {
+                                            pendingPickResult = null
+                                            try {
+                                                res.error("PICK_ERROR", e.message ?: "unknown", null)
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
+                                }
                                 "embed" -> {
                                     val img = call.argument<ByteArray>("img")!!
                                     val bits = call.argument<List<Double>>("bits")!!

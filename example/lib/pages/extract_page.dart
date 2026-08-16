@@ -8,6 +8,7 @@ import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
 import 'package:gal/gal.dart';
 
 import '../src/image_utils.dart';
+import '../src/pick_bridge.dart';
 import '../src/wam_bridge.dart';
 import '../src/wam_codec.dart';
 import '../src/wam_download.dart';
@@ -22,7 +23,7 @@ class ExtractPage extends StatefulWidget {
 /// Must match the embed-page cap: the app never produces watermarked images
 /// larger than this, and DWT extraction of larger images would blow up the
 /// native memory (~700MB at 12MP) and crash the app.
-const int _dwtMaxLongEdge = 2048;
+const int _dwtMaxLongEdge = 1536;
 
 class _ExtractPageState extends State<ExtractPage> {
   Uint8List? _imageBytes;
@@ -47,26 +48,32 @@ class _ExtractPageState extends State<ExtractPage> {
   }
 
   Future<void> _pickImage() async {
-    // withData: read straight into memory — no cache copy that ROM galleries
-    // might pick up.
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      allowMultiple: false,
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.first;
-    final raw = file.bytes;
-    if (raw == null) return;
-    // file_picker ALWAYS writes a cache copy of the picked file (even with
-    // withData:true) — remove it so ROM galleries don't show it in the album.
-    try {
-      await FilePicker.platform.clearTemporaryFiles();
-    } catch (_) {}
+    // Android: platform picker reads the content URI directly into memory —
+    // no cache copy that ROM galleries might index. Other platforms fall
+    // back to file_picker (withData).
+    (Uint8List, String)? picked;
+    if (Platform.isAndroid) {
+      picked = await PickBridge.pickImage();
+    } else {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      final raw = file.bytes;
+      if (raw == null) return;
+      picked = (raw, file.name);
+    }
+    if (picked == null) return;
+    final rawBytes = picked.$1;
+    final rawName = picked.$2;
     // Engine-side scaled decode: never hold a full-resolution camera photo
     // in memory; the WAM path downsizes internally anyway and oversized DWT
     // picks are skipped via the recorded original size.
-    final scaled = await decodeToPngScaled(raw);
+    final scaled =
+        await decodeToPngScaled(rawBytes, maxDim: _dwtMaxLongEdge);
     if (scaled == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -77,7 +84,7 @@ class _ExtractPageState extends State<ExtractPage> {
     final origLongEdge = scaled.$2 > scaled.$3 ? scaled.$2 : scaled.$3;
     setState(() {
       _imageBytes = scaled.$1;
-      _imageName = file.name;
+      _imageName = rawName;
       _origLongEdge = origLongEdge;
       _error = null;
       _statusText = null;
@@ -504,7 +511,7 @@ class _ExtractPageState extends State<ExtractPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.4',
+              '盲水印 v1.1.5',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,

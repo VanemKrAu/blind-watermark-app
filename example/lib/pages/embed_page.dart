@@ -9,6 +9,7 @@ import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
 import 'package:gal/gal.dart';
 
 import '../src/image_utils.dart';
+import '../src/pick_bridge.dart';
 import '../src/wam_bridge.dart';
 import '../src/wam_codec.dart';
 import '../src/wam_download.dart';
@@ -28,11 +29,11 @@ enum _InputType { text, image }
 
 /// Max long edge for DWT embedding. The DWT-DCT-SVD pipeline holds ~2.5x the
 /// image as YUV double matrices: a 12MP photo peaks at ~1GB native memory and
-/// kills the app (LMK) on phones. 2048 keeps the peak around ~220MB while
-/// staying sharp enough for sharing. Extraction is unaffected: the block grid
-/// derives from the image's own size, and the saved watermarked image keeps
-/// this size.
-const int _dwtMaxLongEdge = 2048;
+/// kills the app (LMK) on phones. 1536 keeps the peak around ~110MB — safe
+/// even on low-RAM devices — while staying sharp enough for sharing.
+/// Extraction is unaffected: the block grid derives from the image's own
+/// size, and the saved watermarked image keeps this size.
+const int _dwtMaxLongEdge = 1536;
 
 class _EmbedPageState extends State<EmbedPage> {
   Uint8List? _imageBytes;
@@ -59,31 +60,38 @@ class _EmbedPageState extends State<EmbedPage> {
     super.dispose();
   }
 
-  Future<void> _pickImage() async {
-    // withData: read straight into memory. file_picker would otherwise copy
-    // the photo into the app cache dir, which some ROM galleries index and
-    // show in the album out of nowhere.
+  /// Picks an image file, reading bytes straight into memory.
+  ///
+  /// On Android the platform picker reads the content URI directly (no cache
+  /// copy — ROM galleries can never index a transient file); elsewhere falls
+  /// back to file_picker (withData).
+  Future<(Uint8List, String)?> _pickImageRaw() async {
+    if (Platform.isAndroid) {
+      return await PickBridge.pickImage();
+    }
     final result = await FilePicker.platform.pickFiles(
       type: FileType.image,
       allowMultiple: false,
       withData: true,
     );
-    if (result == null || result.files.isEmpty) return;
+    if (result == null || result.files.isEmpty) return null;
     final file = result.files.first;
     final raw = file.bytes;
-    if (raw == null) return;
-    // file_picker ALWAYS writes a cache copy of the picked file (even with
-    // withData:true it copies first, then also reads into memory), and only
-    // clears it when asked — some ROM galleries index the app cache and show
-    // the copy in the album. Remove it right away.
-    try {
-      await FilePicker.platform.clearTemporaryFiles();
-    } catch (_) {}
+    if (raw == null) return null;
+    return (raw, file.name);
+  }
+
+  Future<void> _pickImage() async {
+    final picked = await _pickImageRaw();
+    if (picked == null) return;
+    final rawBytes = picked.$1;
+    final rawName = picked.$2;
     // Decode with an engine-side scaled decode: camera photos (12-108MP)
     // never materialize at full resolution in app memory — that alone could
     // get the process killed before embedding even starts. Images at or
-    // below 2048px are kept unchanged.
-    final scaled = await decodeToPngScaled(raw);
+    // below the DWT cap are kept unchanged.
+    final scaled =
+        await decodeToPngScaled(rawBytes, maxDim: _dwtMaxLongEdge);
     if (scaled == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -93,7 +101,7 @@ class _EmbedPageState extends State<EmbedPage> {
     }
     setState(() {
       _imageBytes = scaled.$1;
-      _imageName = file.name;
+      _imageName = rawName;
       _resultBytes = null;
       _wmBitLength = null;
       _wamCode = null;
@@ -103,23 +111,11 @@ class _EmbedPageState extends State<EmbedPage> {
   }
 
   Future<void> _pickLogo() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      allowMultiple: false,
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.first;
-    final bytes = file.bytes;
-    if (bytes == null) return;
-    // See _pickImage: file_picker leaves a cache copy behind — remove it so
-    // ROM galleries don't pick it up.
-    try {
-      await FilePicker.platform.clearTemporaryFiles();
-    } catch (_) {}
+    final picked = await _pickImageRaw();
+    if (picked == null) return;
     // Re-encode through the Flutter engine: the native side (stb_image)
     // cannot decode HEIC/AVIF logos.
-    final png = await decodeToPng(bytes);
+    final png = await decodeToPng(picked.$1);
     if (png == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -129,7 +125,7 @@ class _EmbedPageState extends State<EmbedPage> {
     }
     setState(() {
       _logoBytes = png;
-      _logoName = file.name;
+      _logoName = picked.$2;
       _resultBytes = null;
       _wmBitLength = null;
       _wamCode = null;
@@ -626,7 +622,7 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.4',
+              '盲水印 v1.1.5',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,
