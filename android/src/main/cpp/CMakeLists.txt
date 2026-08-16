@@ -79,10 +79,13 @@ target_compile_options(flutter_blind_watermark PRIVATE
     -Wno-unused-parameter
 )
 
-# ARM64 specific optimizations
-target_compile_options(flutter_blind_watermark PRIVATE
-    -march=armv8-a+simd
-)
+# ARM64 specific optimizations (NOT for armeabi-v7a: armv8 instructions are
+# illegal on 32-bit ARM and would crash on such devices)
+if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    target_compile_options(flutter_blind_watermark PRIVATE
+        -march=armv8-a+simd
+    )
+endif()
 
 # Eigen optimizations - enable vectorization
 target_compile_definitions(flutter_blind_watermark PRIVATE

@@ -44,3 +44,57 @@ Future<(int, int)?> imageSize(Uint8List bytes) async {
     return null;
   }
 }
+
+/// Downscales [bytes] so that its long edge is <= [maxDim].
+///
+/// Never upscales: images already within [maxDim] are returned unchanged
+/// (same bytes, no re-encode). Returns `(pngBytes, width, height)` or null
+/// on failure.
+///
+/// Used before DWT embedding: the DWT-DCT-SVD pipeline holds ~2.5x the
+/// YUV double matrices in memory (12MP photo ≈ 1GB native peak), which
+/// reliably kills the app on phones. Extraction is unaffected because the
+/// watermark block grid derives from the image's own dimensions, and the
+/// saved watermarked image keeps the downscaled size.
+Future<(Uint8List, int, int)?> downscalePng(Uint8List bytes, int maxDim) async {
+  try {
+    final codec = await ui.instantiateImageCodec(bytes);
+    try {
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      try {
+        final w = image.width;
+        final h = image.height;
+        final longEdge = w > h ? w : h;
+        if (longEdge <= maxDim) {
+          return (bytes, w, h);
+        }
+        final scale = maxDim / longEdge;
+        final tw = (w * scale).round();
+        final th = (h * scale).round();
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawImageRect(
+          image,
+          ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+          ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+          ui.Paint()..filterQuality = ui.FilterQuality.medium,
+        );
+        final picture = recorder.endRecording();
+        final out = await picture.toImage(tw, th);
+        try {
+          final data = await out.toByteData(format: ui.ImageByteFormat.png);
+          return data == null ? null : (data.buffer.asUint8List(), tw, th);
+        } finally {
+          out.dispose();
+        }
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
+  } catch (_) {
+    return null;
+  }
+}

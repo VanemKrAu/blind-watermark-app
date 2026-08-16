@@ -57,29 +57,38 @@ class WamBridge {
   static Future<Uint8List?> resizePng(Uint8List bytes, int maxDim) async {
     try {
       final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final img = frame.image;
-      final w = img.width;
-      final h = img.height;
-      final scale = maxDim / (w > h ? w : h);
-      final tw = (w * scale).round();
-      final th = (h * scale).round();
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-        Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-      final picture = recorder.endRecording();
-      final out = await picture.toImage(tw, th);
-      final data =
-          await out.toByteData(format: ui.ImageByteFormat.png);
-      img.dispose();
-      out.dispose();
-      codec.dispose();
-      return data?.buffer.asUint8List();
+      try {
+        final frame = await codec.getNextFrame();
+        final img = frame.image;
+        try {
+          final w = img.width;
+          final h = img.height;
+          final scale = maxDim / (w > h ? w : h);
+          final tw = (w * scale).round();
+          final th = (h * scale).round();
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(recorder);
+          canvas.drawImageRect(
+            img,
+            Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+            Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+            Paint()..filterQuality = FilterQuality.medium,
+          );
+          final picture = recorder.endRecording();
+          final out = await picture.toImage(tw, th);
+          try {
+            final data =
+                await out.toByteData(format: ui.ImageByteFormat.png);
+            return data?.buffer.asUint8List();
+          } finally {
+            out.dispose();
+          }
+        } finally {
+          img.dispose();
+        }
+      } finally {
+        codec.dispose();
+      }
     } catch (_) {
       return null;
     }
@@ -90,25 +99,34 @@ class WamBridge {
       Uint8List bytes, int targetW, int targetH) async {
     try {
       final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final img = frame.image;
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-        Rect.fromLTWH(
-            0, 0, targetW.toDouble(), targetH.toDouble()),
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-      final picture = recorder.endRecording();
-      final out = await picture.toImage(targetW, targetH);
-      final data =
-          await out.toByteData(format: ui.ImageByteFormat.png);
-      img.dispose();
-      out.dispose();
-      codec.dispose();
-      return data?.buffer.asUint8List();
+      try {
+        final frame = await codec.getNextFrame();
+        final img = frame.image;
+        try {
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(recorder);
+          canvas.drawImageRect(
+            img,
+            Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+            Rect.fromLTWH(
+                0, 0, targetW.toDouble(), targetH.toDouble()),
+            Paint()..filterQuality = FilterQuality.medium,
+          );
+          final picture = recorder.endRecording();
+          final out = await picture.toImage(targetW, targetH);
+          try {
+            final data =
+                await out.toByteData(format: ui.ImageByteFormat.png);
+            return data?.buffer.asUint8List();
+          } finally {
+            out.dispose();
+          }
+        } finally {
+          img.dispose();
+        }
+      } finally {
+        codec.dispose();
+      }
     } catch (_) {
       return null;
     }

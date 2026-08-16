@@ -1,4 +1,4 @@
-﻿import 'dart:io';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -18,6 +18,11 @@ class ExtractPage extends StatefulWidget {
   @override
   State<ExtractPage> createState() => _ExtractPageState();
 }
+
+/// Must match the embed-page cap: the app never produces watermarked images
+/// larger than this, and DWT extraction of larger images would blow up the
+/// native memory (~700MB at 12MP) and crash the app.
+const int _dwtMaxLongEdge = 2048;
 
 class _ExtractPageState extends State<ExtractPage> {
   Uint8List? _imageBytes;
@@ -89,35 +94,57 @@ class _ExtractPageState extends State<ExtractPage> {
       final bytes = _imageBytes!;
       final history = await WmHistory.all();
       var found = false;
+      var wamUnavailable = false;
+      var dwtSkippedBig = false;
 
       // 1) Strong-robust (WAM): no parameters needed.
       if (WamBridge.isSupported) {
-        if (!mounted) return;
         final ready = await ensureWamModels(context);
         if (!ready) {
+          // Models missing (corrupted install): skip WAM, still try DWT.
+          wamUnavailable = true;
           if (mounted) {
-            setState(() => _error = '强鲁棒模式模型不可用（安装包可能不完整）');
+            setState(() => _statusText = '强鲁棒模型不可用，跳过强鲁棒检测…');
           }
-          return;
-        }
-        if (mounted) setState(() => _statusText = '正在识别强鲁棒水印…');
-        final bits = await WamBridge.extract(bytes);
-        final code = WamCodec.bitsToStr(bits);
-        final match = await WmHistory.matchWam(bits, 4);
-        if (match != null) {
-          found = true;
-          if (mounted) {
-            setState(() {
-              _wamCode = code;
-              _resultText = match.$1.text ?? '';
-              _resultNote = '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
-            });
+        } else {
+          if (mounted) setState(() => _statusText = '正在识别强鲁棒水印…');
+          final bits = await WamBridge.extract(bytes);
+          final code = WamCodec.bitsToStr(bits);
+          final match = await WmHistory.matchWam(bits, 4);
+          if (match != null) {
+            found = true;
+            if (mounted) {
+              setState(() {
+                _wamCode = code;
+                _resultText = match.$1.text ?? '';
+                _resultNote = '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
+              });
+            }
           }
         }
       }
 
+      // DWT extraction derives its block grid from the image's own size, so
+      // it must run on the exact watermarked image; and a 12MP image peaks at
+      // ~700MB native memory in the double-precision pipeline — killed by the
+      // OS. The app never produces watermarked images larger than 2048px, so
+      // skipping oversized picks is safe.
+      final hasDwtRecs =
+          history.any((e) => e.kind == 'text' || e.kind == 'logo');
+      if (!found && hasDwtRecs) {
+        final size = await imageSize(bytes);
+        final longEdge = size == null
+            ? 0
+            : (size.$1 > size.$2 ? size.$1 : size.$2);
+        if (longEdge > _dwtMaxLongEdge) {
+          dwtSkippedBig = true;
+        }
+      }
+
       // 2) DWT text: try the most recent text records (skip if none).
-      if (!found && history.any((e) => e.kind == 'text')) {
+      if (!found &&
+          !dwtSkippedBig &&
+          history.any((e) => e.kind == 'text')) {
         if (mounted) setState(() => _statusText = '正在尝试文本水印…');
         final textRecs = history.where((e) => e.kind == 'text').take(10);
         for (final rec in textRecs) {
@@ -141,7 +168,9 @@ class _ExtractPageState extends State<ExtractPage> {
       }
 
       // 3) DWT logo: try the most recent logo records (skip if none).
-      if (!found && history.any((e) => e.kind == 'logo')) {
+      if (!found &&
+          !dwtSkippedBig &&
+          history.any((e) => e.kind == 'logo')) {
         if (mounted) setState(() => _statusText = '正在尝试 Logo 水印…');
         final logoRecs = history.where((e) => e.kind == 'logo').take(5);
         for (final rec in logoRecs) {
@@ -167,8 +196,11 @@ class _ExtractPageState extends State<ExtractPage> {
 
       if (!found && mounted) {
         setState(() {
-          _resultNote =
-              '未检测到可识别的本机水印。水印参数（密码/长度）保存在嵌入时的那台设备上，请在同一设备提取；强鲁棒标识可在其他设备上识别出 32 位码';
+          _resultNote = dwtSkippedBig
+              ? '图片尺寸过大：文本/Logo 水印需在嵌入时的同尺寸图片上提取，且超大图在本设备上无法安全处理。请使用嵌入后保存的图片（≤2048px）；强鲁棒水印不受此限制。'
+              : wamUnavailable
+                  ? '强鲁棒模型不可用（安装包可能不完整），且未检测到可识别的本机文本/Logo 水印。水印参数（密码/长度）保存在嵌入时的那台设备上，请在同一设备提取。'
+                  : '未检测到可识别的本机水印。水印参数（密码/长度）保存在嵌入时的那台设备上，请在同一设备提取；强鲁棒标识可在其他设备上识别出 32 位码';
           _resultText = '';
         });
       }
@@ -463,7 +495,7 @@ class _ExtractPageState extends State<ExtractPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.0',
+              '盲水印 v1.1.1',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,

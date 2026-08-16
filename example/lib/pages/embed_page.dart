@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -25,6 +25,14 @@ class EmbedPage extends StatefulWidget {
 }
 
 enum _InputType { text, image }
+
+/// Max long edge for DWT embedding. The DWT-DCT-SVD pipeline holds ~2.5x the
+/// image as YUV double matrices: a 12MP photo peaks at ~1GB native memory and
+/// kills the app (LMK) on phones. 2048 keeps the peak around ~220MB while
+/// staying sharp enough for sharing. Extraction is unaffected: the block grid
+/// derives from the image's own size, and the saved watermarked image keeps
+/// this size.
+const int _dwtMaxLongEdge = 2048;
 
 class _EmbedPageState extends State<EmbedPage> {
   Uint8List? _imageBytes;
@@ -93,8 +101,18 @@ class _EmbedPageState extends State<EmbedPage> {
     final file = result.files.first;
     final bytes = file.bytes;
     if (bytes == null) return;
+    // Re-encode through the Flutter engine: the native side (stb_image)
+    // cannot decode HEIC/AVIF logos.
+    final png = await decodeToPng(bytes);
+    if (png == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('无法读取该 Logo 图片格式')));
+      }
+      return;
+    }
     setState(() {
-      _logoBytes = bytes;
+      _logoBytes = png;
       _logoName = file.name;
       _resultBytes = null;
       _wmBitLength = null;
@@ -158,24 +176,28 @@ class _EmbedPageState extends State<EmbedPage> {
       if (inputType == _InputType.image) {
         // Logo watermark: always DWT (keeps full resolution).
         final logoBytes = _logoBytes!;
+        final logoSize = await imageSize(logoBytes);
+        final size = await imageSize(bytes);
+        if (size == null || logoSize == null) {
+          throw Exception('图片解析失败');
+        }
+        // Downscale huge carriers before DWT: the native pipeline holds
+        // ~2.5x the image as YUV doubles (12MP photo ≈ 1GB peak) and gets
+        // killed by the OS on phones.
+        final (carrier, cw, ch) = await _fitDwtCarrier(bytes, size);
+        final capacity = (cw ~/ 8) * (ch ~/ 8) - 1;
+        final need = logoSize.$1 * logoSize.$2;
+        if (need > capacity) {
+          throw Exception('Logo 过大：图片最多容纳约 $capacity bit，Logo 需 $need bit。请缩小 Logo 或换更大的图片。');
+        }
         // The native side loads the logo from a file path; write a temp copy.
         final tmp = File(
             '${Directory.systemTemp.path}/bwm_logo_${DateTime.now().millisecondsSinceEpoch}.png');
         await tmp.writeAsBytes(logoBytes, flush: true);
         try {
-          final logoSize = await imageSize(logoBytes);
-          final size = await imageSize(bytes);
-          if (size == null || logoSize == null) {
-            throw Exception('图片解析失败');
-          }
-          final capacity = (size.$1 ~/ 8) * (size.$2 ~/ 8) - 1;
-          final need = logoSize.$1 * logoSize.$2;
-          if (need > capacity) {
-            throw Exception('Logo 过大：图片最多容纳约 $capacity bit，Logo 需 $need bit。请缩小 Logo 或换更大的图片。');
-          }
           final result = await compute(
             _embedLogoIsolate,
-            (bytes, tmp.path, pwWm, pwImg),
+            (carrier, tmp.path, pwWm, pwImg),
           );
           await WmHistory.add(WmRecord(
             kind: 'logo',
@@ -186,7 +208,7 @@ class _EmbedPageState extends State<EmbedPage> {
           if (mounted) {
             setState(() {
               _resultBytes = result;
-              _methodNote = 'Logo 水印（保持画质）';
+              _methodNote = 'Logo 水印（尺寸已适配）';
             });
           }
         } finally {
@@ -197,16 +219,10 @@ class _EmbedPageState extends State<EmbedPage> {
       } else {
         final text = _textController.text.trim();
         final useWam = await _useWam(bytes);
-
-        if (useWam) {
-          if (!mounted) return;
-          final ready = await ensureWamModels(context);
-          if (!ready) {
-            if (mounted) {
-              setState(() => _error = '强鲁棒模式模型不可用（安装包可能不完整）');
-            }
-            return;
-          }
+        // WAM is preferred for small images; if its models are somehow
+        // unavailable (corrupted install), fall back to DWT instead of
+        // erroring out.
+        if (useWam && await ensureWamModels(context)) {
           // Strong-robust short code (survives crop/rotation/compression).
           final bits = WamCodec.textToBits(text);
           final code = WamCodec.bitsToStr(bits);
@@ -234,8 +250,11 @@ class _EmbedPageState extends State<EmbedPage> {
           // Long text on large image: DWT keeps full resolution.
           // Capacity check first: text bits must fit the 4x4 block grid.
           final size = await imageSize(bytes);
+          var carrier = bytes;
           if (size != null) {
-            final capacity = (size.$1 ~/ 8) * (size.$2 ~/ 8) - 1;
+            final (fit, cw, ch) = await _fitDwtCarrier(bytes, size);
+            carrier = fit;
+            final capacity = (cw ~/ 8) * (ch ~/ 8) - 1;
             final bitLen = utf8.encode(text).length * 8;
             if (bitLen > capacity) {
               throw Exception(
@@ -244,21 +263,21 @@ class _EmbedPageState extends State<EmbedPage> {
           }
           final result = await compute(
             _embedTextIsolate,
-            (bytes, text, pwWm, pwImg),
+            (carrier, text, pwWm, pwImg),
           );
-          await WmHistory.add(WmRecord(
-            kind: 'text',
-            text: text,
-            len: result.$2,
-            pw: pwWm,
-          ));
-          if (mounted) {
-            setState(() {
-              _resultBytes = result.$1;
-              _wmBitLength = result.$2;
-              _methodNote = '文本水印（保持画质）';
-            });
-          }
+            await WmHistory.add(WmRecord(
+              kind: 'text',
+              text: text,
+              len: result.$2,
+              pw: pwWm,
+            ));
+            if (mounted) {
+              setState(() {
+                _resultBytes = result.$1;
+                _wmBitLength = result.$2;
+                _methodNote = '文本水印（尺寸已适配）';
+              });
+            }
         }
       }
 
@@ -272,6 +291,17 @@ class _EmbedPageState extends State<EmbedPage> {
     } finally {
       if (mounted) setState(() => _processing = false);
     }
+  }
+
+  /// Returns (carrierBytes, width, height) for DWT embedding: downscales
+  /// [bytes] so its long edge <= [_dwtMaxLongEdge] (never upscales).
+  Future<(Uint8List, int, int)> _fitDwtCarrier(
+      Uint8List bytes, (int, int) size) async {
+    final longEdge = size.$1 > size.$2 ? size.$1 : size.$2;
+    if (longEdge <= _dwtMaxLongEdge) return (bytes, size.$1, size.$2);
+    final scaled = await downscalePng(bytes, _dwtMaxLongEdge);
+    if (scaled == null) throw Exception('图片缩放失败');
+    return scaled;
   }
 
   Future<void> _saveResult() async {
@@ -384,7 +414,7 @@ class _EmbedPageState extends State<EmbedPage> {
             const SizedBox(height: 8),
 
             Text(
-              '无需选择方案：小图自动使用强鲁棒水印（抗裁剪/旋转/压缩），大图与 Logo 自动保持原画质',
+              '无需选择方案：小图自动使用强鲁棒水印（抗裁剪/旋转/压缩），大图与 Logo 自动适配尺寸（超大图先缩至 2048px 内以保证稳定）',
               style: TextStyle(
                 color: colorScheme.onSurfaceVariant,
                 fontSize: 12,
@@ -569,7 +599,7 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.0',
+              '盲水印 v1.1.1',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,
