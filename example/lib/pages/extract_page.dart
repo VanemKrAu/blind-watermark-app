@@ -58,6 +58,11 @@ class _ExtractPageState extends State<ExtractPage> {
     final file = result.files.first;
     final raw = file.bytes;
     if (raw == null) return;
+    // file_picker ALWAYS writes a cache copy of the picked file (even with
+    // withData:true) — remove it so ROM galleries don't show it in the album.
+    try {
+      await FilePicker.platform.clearTemporaryFiles();
+    } catch (_) {}
     // Engine-side scaled decode: never hold a full-resolution camera photo
     // in memory; the WAM path downsizes internally anyway and oversized DWT
     // picks are skipped via the recorded original size.
@@ -499,7 +504,7 @@ class _ExtractPageState extends State<ExtractPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.2',
+              '盲水印 v1.1.3',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,

@@ -1,4 +1,4 @@
-﻿package com.example.flutter_blind_watermark_example
+package com.example.flutter_blind_watermark_example
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -42,11 +42,21 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        // Defensive: mark the app cache dir so ROM galleries never index any
-        // transient file that ends up there.
+        // Defensive: mark every app-owned directory with .nomedia so ROM
+        // galleries never index transient files (file_picker cache copies,
+        // logo temp files, model files). Some ROMs scan the external cache
+        // too, so cover both internal and external dirs.
         try {
-            val nomedia = java.io.File(cacheDir, ".nomedia")
-            if (!nomedia.exists()) nomedia.createNewFile()
+            for (d in listOf(
+                cacheDir,
+                getExternalCacheDir(),
+                filesDir,
+                getExternalFilesDir(null),
+            )) {
+                if (d == null) continue
+                val nomedia = File(d, ".nomedia")
+                if (!nomedia.exists()) nomedia.createNewFile()
+            }
         } catch (_: Exception) {}
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -114,15 +124,35 @@ class MainActivity : FlutterActivity() {
         return env
     }
 
-    /** Extracts a bundled model into filesDir once, then loads the session
-     *  from the file path — avoids holding a 95MB byte[] plus the session
-     *  copy in memory at the same time. */
+    /**
+     * Extracts a bundled model into filesDir once, then loads the session
+     * from the file path — avoids holding a 95MB byte[] plus the session
+     * copy in memory at the same time.
+     *
+     * Model cache invalidation: files left by an older install (or by the
+     * removed download flow) can be stale — e.g. an external-data ONNX whose
+     * .data file is absent makes session creation fail with ORT "External
+     * data path does not exist". Whenever the app version changes, wipe the
+     * cache and re-extract from the bundled assets.
+     */
+    @Suppress("DEPRECATION")
     private fun ensureModelFile(name: String): File? {
-        val f = File(filesDir, "models/$name")
+        val dir = File(filesDir, "models")
+        try {
+            val ver = packageManager.getPackageInfo(packageName, 0).versionCode
+            val stamp = File(dir, ".model_stamp")
+            val ok = stamp.exists() && stamp.readText().trim() == ver.toString()
+            if (!ok) {
+                dir.listFiles()?.forEach { it.delete() }
+                dir.mkdirs()
+                stamp.writeText(ver.toString())
+            }
+        } catch (_: Exception) {}
+        val f = File(dir, name)
         if (f.exists() && f.length() > 0) return f
         return try {
             assets.open("flutter_assets/assets/onnx/$name").use { input ->
-                f.parentFile?.mkdirs()
+                dir.mkdirs()
                 FileOutputStream(f).use { out -> input.copyTo(out) }
             }
             f

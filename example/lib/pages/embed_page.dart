@@ -72,6 +72,13 @@ class _EmbedPageState extends State<EmbedPage> {
     final file = result.files.first;
     final raw = file.bytes;
     if (raw == null) return;
+    // file_picker ALWAYS writes a cache copy of the picked file (even with
+    // withData:true it copies first, then also reads into memory), and only
+    // clears it when asked — some ROM galleries index the app cache and show
+    // the copy in the album. Remove it right away.
+    try {
+      await FilePicker.platform.clearTemporaryFiles();
+    } catch (_) {}
     // Decode with an engine-side scaled decode: camera photos (12-108MP)
     // never materialize at full resolution in app memory — that alone could
     // get the process killed before embedding even starts. Images at or
@@ -105,6 +112,11 @@ class _EmbedPageState extends State<EmbedPage> {
     final file = result.files.first;
     final bytes = file.bytes;
     if (bytes == null) return;
+    // See _pickImage: file_picker leaves a cache copy behind — remove it so
+    // ROM galleries don't pick it up.
+    try {
+      await FilePicker.platform.clearTemporaryFiles();
+    } catch (_) {}
     // Re-encode through the Flutter engine: the native side (stb_image)
     // cannot decode HEIC/AVIF logos.
     final png = await decodeToPng(bytes);
@@ -223,34 +235,43 @@ class _EmbedPageState extends State<EmbedPage> {
       } else {
         final text = _textController.text.trim();
         final useWam = await _useWam(bytes);
-        // WAM is preferred for small images; if its models are somehow
-        // unavailable (corrupted install), fall back to DWT instead of
+        // WAM is preferred for small images; if it's not applicable, its
+        // models are missing, or inference fails at runtime (e.g. broken
+        // model files), fall back to DWT with the same text instead of
         // erroring out.
+        var wamUnavailable = false;
         if (useWam && await ensureWamModels(context)) {
-          // Strong-robust short code (survives crop/rotation/compression).
-          final bits = WamCodec.textToBits(text);
-          final code = WamCodec.bitsToStr(bits);
-          final small = await WamBridge.resizePng(bytes, 256);
-          if (small == null) throw Exception('图片缩放失败');
-          final wm256 = await WamBridge.embed(small, bits);
-          final size = await imageSize(bytes);
-          final result = (size != null)
-              ? await WamBridge.upscalePng(wm256, size.$1, size.$2) ?? wm256
-              : wm256;
-          await WmHistory.add(WmRecord(
-            kind: 'wam',
-            text: text,
-            code: code,
-            pw: pwWm,
-          ));
-          if (mounted) {
-            setState(() {
-              _resultBytes = result;
-              _wamCode = code;
-              _methodNote = '强鲁棒水印（抗裁剪/旋转/压缩）';
-            });
+          try {
+            // Strong-robust short code (survives crop/rotation/compression).
+            final bits = WamCodec.textToBits(text);
+            final code = WamCodec.bitsToStr(bits);
+            final small = await WamBridge.resizePng(bytes, 256);
+            if (small == null) throw Exception('图片缩放失败');
+            final wm256 = await WamBridge.embed(small, bits);
+            final size = await imageSize(bytes);
+            final result = (size != null)
+                ? await WamBridge.upscalePng(wm256, size.$1, size.$2) ?? wm256
+                : wm256;
+            await WmHistory.add(WmRecord(
+              kind: 'wam',
+              text: text,
+              code: code,
+              pw: pwWm,
+            ));
+            if (mounted) {
+              setState(() {
+                _resultBytes = result;
+                _wamCode = code;
+                _methodNote = '强鲁棒水印（抗裁剪/旋转/压缩）';
+              });
+            }
+          } catch (_) {
+            wamUnavailable = true;
           }
         } else {
+          wamUnavailable = useWam;
+        }
+        if (!useWam || wamUnavailable) {
           // Long text on large image: DWT keeps full resolution.
           // Capacity check first: text bits must fit the 4x4 block grid.
           final size = await imageSize(bytes);
@@ -269,19 +290,21 @@ class _EmbedPageState extends State<EmbedPage> {
             _embedTextIsolate,
             (carrier, text, pwWm, pwImg),
           );
-            await WmHistory.add(WmRecord(
-              kind: 'text',
-              text: text,
-              len: result.$2,
-              pw: pwWm,
-            ));
-            if (mounted) {
-              setState(() {
-                _resultBytes = result.$1;
-                _wmBitLength = result.$2;
-                _methodNote = '文本水印（尺寸已适配）';
-              });
-            }
+          await WmHistory.add(WmRecord(
+            kind: 'text',
+            text: text,
+            len: result.$2,
+            pw: pwWm,
+          ));
+          if (mounted) {
+            setState(() {
+              _resultBytes = result.$1;
+              _wmBitLength = result.$2;
+              _methodNote = wamUnavailable
+                  ? '文本水印（强鲁棒不可用，已自动回退）'
+                  : '文本水印（尺寸已适配）';
+            });
+          }
         }
       }
 
@@ -603,7 +626,7 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.2',
+              '盲水印 v1.1.3',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,
