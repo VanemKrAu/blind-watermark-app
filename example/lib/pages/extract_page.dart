@@ -476,14 +476,14 @@ class _ExtractPageState extends State<ExtractPage> {
                 ),
                 const SizedBox(height: 12),
                 // 与嵌入页同款动画：AnimatedSize 单阶段高度变形（自动→文本/Logo
-                // 平滑展开，顶对齐）+ 方向性滑动淡入淡出；退场子项保持自然高度
+                // 平滑展开，顶对齐）+ 纯渐隐渐显（无左右滑动）；退场子项保持自然高度
                 AnimatedSize(
-                  duration: const Duration(milliseconds: 240),
+                  duration: const Duration(milliseconds: 200),
                   curve: Cubic(0.22, 1.0, 0.36, 1.0),
                   alignment: Alignment.topCenter,
                   clipBehavior: Clip.hardEdge,
                   child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 240),
+                    duration: const Duration(milliseconds: 200),
                     switchInCurve: Cubic(0.22, 1.0, 0.36, 1.0),
                     switchOutCurve: Curves.easeIn,
                     layoutBuilder: (currentChild, previousChildren) {
@@ -505,20 +505,8 @@ class _ExtractPageState extends State<ExtractPage> {
                         ],
                       );
                     },
-                    transitionBuilder: (child, animation) {
-                      // 方向性：自动/文本（左）从左侧滑入，Logo（右）从右侧滑入
-                      final fromLeft =
-                          child.key != const ValueKey(_ExtractType.image);
-                      final offset = Tween(
-                        begin: Offset(fromLeft ? -10.0 : 10.0, 0),
-                        end: Offset.zero,
-                      ).animate(animation);
-                      return FadeTransition(
-                        opacity: animation,
-                        child:
-                            SlideTransition(position: offset, child: child),
-                      );
-                    },
+                    transitionBuilder: (child, animation) =>
+                        FadeTransition(opacity: animation, child: child),
                     child: SizedBox(
                       key: ValueKey(_extractType),
                       child: _extractType == _ExtractType.auto

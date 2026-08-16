@@ -697,11 +697,10 @@ class _ImagePickerCard extends StatelessWidget {
 }
 
 /// 文本输入框 ⇄ Logo 选择框切换动画（ui-animation 规范）：
-/// - 内容切换只动 transform/opacity：按 SegmentedButton 的左右布局做方向性滑动
-///   （文本从左侧滑入/滑向左侧退出，Logo 从右侧），10px
-/// - 退场快速淡出（easeIn），入场用进入曲线（Cubic(0.22,1,0.36,1)）——不对称时序
+/// - 内容切换**纯渐隐渐显**（与底部 tab 观感一致，无左右滑动）；
+///   退场快速淡出（easeIn），入场用进入曲线（Cubic(0.22,1,0.36,1)）——不对称时序
 /// - 高度用 AnimatedSize 做「受控容器缩放」过渡（card-resize 例外）：Stack 只按
-///   当前子项定尺寸，切换瞬间从旧高平滑收缩/展开到新高（240ms，顶对齐），
+///   当前子项定尺寸，切换瞬间从旧高平滑收缩/展开到新高（200ms，顶对齐），
 ///   下方内容随高度变化优雅移动；退场子项用 Positioned(左/右/顶) 保持自然高度
 ///   不被拉伸（此前 Positioned.fill 压扁内容是卡顿观感根源）
 /// - 文本（56~80px 自然高度）与 Logo（64px）高度无需一致；系统减弱动画时零时长
@@ -720,9 +719,8 @@ class _ModeSwitcher extends StatelessWidget {
   final String? logoName;
   final VoidCallback onPickLogo;
 
-  static const _duration = Duration(milliseconds: 240);
+  static const _duration = Duration(milliseconds: 200);
   static const _enterCurve = Cubic(0.22, 1.0, 0.36, 1.0);
-  static const _slide = 10.0;
 
   @override
   Widget build(BuildContext context) {
@@ -756,18 +754,8 @@ class _ModeSwitcher extends StatelessWidget {
             ],
           );
         },
-        transitionBuilder: (child, animation) {
-          // 方向性滑动：文本（左）从左侧进入、滑向左侧退出；Logo（右）反之。
-          final fromLeft = child.key == const ValueKey(_InputType.text);
-          final offset = Tween(
-            begin: Offset(fromLeft ? -_slide : _slide, 0),
-            end: Offset.zero,
-          ).animate(animation);
-          return FadeTransition(
-            opacity: animation,
-            child: SlideTransition(position: offset, child: child),
-          );
-        },
+        transitionBuilder: (child, animation) =>
+            FadeTransition(opacity: animation, child: child),
         child: SizedBox(
           key: ValueKey(inputType),
           child: inputType == _InputType.text
