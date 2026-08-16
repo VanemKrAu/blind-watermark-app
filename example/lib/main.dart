@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blind_watermark/src/blind_watermark_bindings.dart';
 
+import 'pages/about_page.dart';
 import 'pages/embed_page.dart';
 import 'pages/extract_page.dart';
 
@@ -144,6 +145,10 @@ class _HomeShellState extends State<HomeShell> {
             visible: _index == 1,
             child: const ExtractPage(),
           ),
+          _PageSlot(
+            visible: _index == 2,
+            child: const AboutPage(),
+          ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -159,6 +164,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.search_outlined),
             selectedIcon: Icon(Icons.search),
             label: '提取水印',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.info_outline),
+            selectedIcon: Icon(Icons.info),
+            label: '关于',
           ),
         ],
       ),

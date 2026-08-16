@@ -7,11 +7,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
 import 'package:gal/gal.dart';
 
+import '../src/app_version.dart';
 import '../src/image_utils.dart';
 import '../src/pick_bridge.dart';
 import '../src/wam_bridge.dart';
 import '../src/wam_codec.dart';
-import '../src/wam_download.dart';
 
 class ExtractPage extends StatefulWidget {
   const ExtractPage({super.key});
@@ -25,6 +25,8 @@ class ExtractPage extends StatefulWidget {
 /// native memory (~700MB at 12MP) and crash the app.
 const int _dwtMaxLongEdge = 1536;
 
+enum _ExtractType { auto, text, image }
+
 class _ExtractPageState extends State<ExtractPage> {
   Uint8List? _imageBytes;
   String? _imageName;
@@ -33,6 +35,13 @@ class _ExtractPageState extends State<ExtractPage> {
   /// DWT extraction must run on the exact watermarked size; oversized picks
   /// are skipped with a message instead of being processed at a wrong size.
   int _origLongEdge = 0;
+
+  _ExtractType _extractType = _ExtractType.auto;
+  final TextEditingController _passwordController =
+      TextEditingController(text: '1');
+  final TextEditingController _lenController = TextEditingController();
+  final TextEditingController _wController = TextEditingController();
+  final TextEditingController _hController = TextEditingController();
 
   bool _processing = false;
   String? _error;
@@ -44,7 +53,22 @@ class _ExtractPageState extends State<ExtractPage> {
 
   @override
   void dispose() {
+    _passwordController.dispose();
+    _lenController.dispose();
+    _wController.dispose();
+    _hController.dispose();
     super.dispose();
+  }
+
+  void _clearResult() {
+    setState(() {
+      _error = null;
+      _statusText = null;
+      _resultText = null;
+      _resultNote = null;
+      _resultImage = null;
+      _wamCode = null;
+    });
   }
 
   Future<void> _pickImage() async {
@@ -102,6 +126,24 @@ class _ExtractPageState extends State<ExtractPage> {
       return;
     }
 
+    // Manual parameters (used for images embedded on another device).
+    final pw = WmSecurity.seeds(_passwordController.text).$1;
+    final manualLen = int.tryParse(_lenController.text.trim());
+    final manualW = int.tryParse(_wController.text.trim());
+    final manualH = int.tryParse(_hController.text.trim());
+    if (_extractType == _ExtractType.text &&
+        (manualLen == null || manualLen <= 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请输入水印长度（bit）')));
+      return;
+    }
+    if (_extractType == _ExtractType.image &&
+        (manualW == null || manualW <= 0 || manualH == null || manualH <= 0)) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请输入 Logo 宽和高')));
+      return;
+    }
+
     setState(() {
       _processing = true;
       _error = null;
@@ -118,11 +160,62 @@ class _ExtractPageState extends State<ExtractPage> {
       var found = false;
       var wamUnavailable = false;
       var dwtSkippedBig = false;
+      String? wamCodeOnly;
 
-      // 1) Strong-robust (WAM): no parameters needed.
-      if (WamBridge.isSupported) {
-        final ready = await ensureWamModels(context);
-        if (!ready) {
+      // DWT extraction derives its block grid from the image's own size, so
+      // it must run on the exact watermarked image; and a 12MP image peaks at
+      // ~700MB native memory in the double-precision pipeline — killed by the
+      // OS. The app never produces watermarked images larger than 1536px, so
+      // skipping oversized picks is safe.
+      if (_origLongEdge > _dwtMaxLongEdge) {
+        dwtSkippedBig = true;
+      }
+      final canDwt = !dwtSkippedBig;
+
+      // 0) Manual DWT (explicit user intent, e.g. an image embedded on another
+      // device): the user provides the exact password + length / logo size.
+      if (!found && canDwt && _extractType != _ExtractType.auto) {
+        if (_extractType == _ExtractType.text &&
+            manualLen != null && manualLen > 0) {
+          if (mounted) {
+            setState(() => _statusText = '正在按手动参数提取文本水印…');
+          }
+          final result =
+              await compute(_extractTextIsolate, (bytes, manualLen, pw));
+          if (result != null && result.isNotEmpty) {
+            found = true;
+            if (mounted) {
+              setState(() {
+                _resultText = result;
+                _resultNote = '文本水印 · 手动参数（长度 $manualLen）';
+              });
+            }
+          }
+        } else if (_extractType == _ExtractType.image &&
+            manualW != null && manualH != null && manualW > 0 && manualH > 0) {
+          if (mounted) {
+            setState(() => _statusText = '正在按手动参数提取 Logo 水印…');
+          }
+          final result =
+              await compute(_extractLogoIsolate, (bytes, manualW, manualH, pw));
+          if (result != null) {
+            found = true;
+            if (mounted) {
+              setState(() {
+                _resultImage = result;
+                _resultNote = 'Logo 水印 · 手动参数（${manualW}x$manualH）';
+              });
+            }
+          }
+        }
+      }
+
+      // 1) Strong-robust (WAM): no parameters needed. The models are bundled
+      // in the APK and extracted by the host app on demand; getModelsDir()
+      // returns null only if the models are missing (corrupted install).
+      if (!found && WamBridge.isSupported) {
+        final modelsDir = await WamBridge.getModelsDir();
+        if (modelsDir == null) {
           // Models missing (corrupted install): skip WAM, still try DWT.
           wamUnavailable = true;
           if (mounted) {
@@ -130,31 +223,30 @@ class _ExtractPageState extends State<ExtractPage> {
           }
         } else {
           if (mounted) setState(() => _statusText = '正在识别强鲁棒水印…');
-          final bits = await WamBridge.extract(bytes);
-          final code = WamCodec.bitsToStr(bits);
-          final match = await WmHistory.matchWam(bits, 4);
-          if (match != null) {
-            found = true;
-            if (mounted) {
-              setState(() {
-                _wamCode = code;
-                _resultText = match.$1.text ?? '';
-                _resultNote = '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
-              });
+          final (ok, bits) =
+              await compute(wamExtractIsolate, (bytes, modelsDir));
+          if (ok) {
+            final code = WamCodec.bitsToStr(bits);
+            final match = await WmHistory.matchWam(bits, 4);
+            if (match != null) {
+              found = true;
+              if (mounted) {
+                setState(() {
+                  _wamCode = code;
+                  _resultText = match.$1.text ?? '';
+                  _resultNote = '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
+                });
+              }
+            } else {
+              // Code readable on any device, but text recovery needs the
+              // embedder's local history — keep it to show if nothing else
+              // matches.
+              wamCodeOnly = code;
             }
+          } else {
+            wamUnavailable = true;
           }
         }
-      }
-
-      // DWT extraction derives its block grid from the image's own size, so
-      // it must run on the exact watermarked image; and a 12MP image peaks at
-      // ~700MB native memory in the double-precision pipeline — killed by the
-      // OS. The app never produces watermarked images larger than 2048px, so
-      // skipping oversized picks is safe.
-      final hasDwtRecs =
-          history.any((e) => e.kind == 'text' || e.kind == 'logo');
-      if (!found && hasDwtRecs && _origLongEdge > _dwtMaxLongEdge) {
-        dwtSkippedBig = true;
       }
 
       // 2) DWT text: try the most recent text records (skip if none).
@@ -211,14 +303,24 @@ class _ExtractPageState extends State<ExtractPage> {
       }
 
       if (!found && mounted) {
-        setState(() {
-          _resultNote = dwtSkippedBig
-              ? '图片尺寸过大：文本/Logo 水印需在嵌入时的同尺寸图片上提取，且超大图在本设备上无法安全处理。请使用嵌入后保存的图片（≤2048px）；强鲁棒水印不受此限制。'
-              : wamUnavailable
-                  ? '强鲁棒模型不可用（安装包可能不完整），且未检测到可识别的本机文本/Logo 水印。水印参数（密码/长度）保存在嵌入时的那台设备上，请在同一设备提取。'
-                  : '未检测到可识别的本机水印。水印参数（密码/长度）保存在嵌入时的那台设备上，请在同一设备提取；强鲁棒标识可在其他设备上识别出 32 位码';
-          _resultText = '';
-        });
+        if (wamCodeOnly != null) {
+          setState(() {
+            _wamCode = wamCodeOnly;
+            _resultText = '';
+            _resultNote = '强鲁棒水印：仅识别出 32 位标识码，本机没有对应的文本记录。'
+                '请与嵌入方核对标识码；文本/Logo 水印需嵌入方提供密码与长度（或 Logo 尺寸），'
+                '在「手动提取参数」中填写。';
+          });
+        } else {
+          setState(() {
+            _resultNote = dwtSkippedBig
+                ? '图片尺寸过大：文本/Logo 水印需在嵌入时的同尺寸图片上提取，且超大图在本设备上无法安全处理。请使用嵌入后保存的图片（≤1536px）；强鲁棒水印不受此限制。'
+                : wamUnavailable
+                    ? '强鲁棒模型不可用（安装包可能不完整），且未检测到可识别的本机文本/Logo 水印。若这是他人嵌入的图片，请向嵌入方获取密码与长度/尺寸后在「手动提取参数」中填写。'
+                    : '未检测到可识别的本机水印。若这是他人嵌入的图片，请向嵌入方获取密码与长度/尺寸后在「手动提取参数」中填写；强鲁棒标识可在其他设备上识别出 32 位码';
+            _resultText = '';
+          });
+        }
       }
     } catch (e) {
       if (mounted) setState(() => _error = '提取失败：$e');
@@ -323,11 +425,107 @@ class _ExtractPageState extends State<ExtractPage> {
             const SizedBox(height: 16),
 
             Text(
-              '无需任何参数：自动识别强鲁棒水印 / 文本水印 / Logo 水印',
+              '默认全自动识别本机水印；如需提取他人图片，请在下方按嵌入方提供的参数手动填写',
               style: TextStyle(
                 color: colorScheme.onSurfaceVariant,
                 fontSize: 12,
               ),
+            ),
+            const SizedBox(height: 8),
+
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('手动提取参数（可选）'),
+              subtitle: const Text('密码与长度/尺寸需与嵌入时一致'),
+              childrenPadding: const EdgeInsets.only(top: 8, bottom: 8),
+              children: [
+                SegmentedButton<_ExtractType>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: _ExtractType.auto,
+                      icon: Icon(Icons.auto_awesome),
+                      label: Text('自动'),
+                    ),
+                    ButtonSegment(
+                      value: _ExtractType.text,
+                      icon: Icon(Icons.text_fields),
+                      label: Text('文本'),
+                    ),
+                    ButtonSegment(
+                      value: _ExtractType.image,
+                      icon: Icon(Icons.image_outlined),
+                      label: Text('Logo'),
+                    ),
+                  ],
+                  selected: {_extractType},
+                  onSelectionChanged: (s) {
+                    setState(() => _extractType = s.first);
+                    _clearResult();
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passwordController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '水印密码',
+                    hintText: '与嵌入时一致，默认 1',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeIn,
+                  transitionBuilder: (child, animation) =>
+                      FadeTransition(opacity: animation, child: child),
+                  child: SizedBox(
+                    key: ValueKey(_extractType),
+                    height: _extractType == _ExtractType.auto ? 0 : 72,
+                    child: _extractType == _ExtractType.text
+                        ? TextField(
+                            controller: _lenController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              labelText: '水印长度（bit）',
+                              hintText: '嵌入结果会显示长度，如 119',
+                              border: OutlineInputBorder(),
+                            ),
+                          )
+                        : _extractType == _ExtractType.image
+                            ? Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _wController,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Logo 宽',
+                                        hintText: '嵌入时 Logo 尺寸',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _hController,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Logo 高',
+                                        hintText: '嵌入时 Logo 尺寸',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : const SizedBox.shrink(),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
 
@@ -510,9 +708,7 @@ class _ExtractPageState extends State<ExtractPage> {
                   : const SizedBox.shrink(),
             ),
             const SizedBox(height: 24),
-            Text(
-              '盲水印 v1.1.12',
-              textAlign: TextAlign.center,
+            AppVersionText(
               style: TextStyle(
                 color: colorScheme.outline,
                 fontSize: 11,

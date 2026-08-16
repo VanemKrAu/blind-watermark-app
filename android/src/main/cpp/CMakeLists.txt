@@ -37,6 +37,7 @@ set(SOURCES
     "${PLUGIN_ROOT}/src/numpy_rng.cpp"
     "${PLUGIN_ROOT}/src/watermark_core.cpp"
     "${PLUGIN_ROOT}/src/blind_watermark_ffi.cpp"
+    "${PLUGIN_ROOT}/src/wam_ort.cpp"
     ${WEBP_DEC_SOURCES}
     ${WEBP_DSP_SOURCES}
     ${WEBP_UTILS_SOURCES}
@@ -60,6 +61,7 @@ target_include_directories(flutter_blind_watermark PRIVATE
     "${PLUGIN_ROOT}/src"
     "${PLUGIN_ROOT}/third_party"
     "${PLUGIN_ROOT}/third_party/Eigen"
+    "${PLUGIN_ROOT}/third_party/ort/include"
     "${WEBP_ROOT}"
     "${WEBP_ROOT}/src"
 )

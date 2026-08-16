@@ -8,11 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
 import 'package:gal/gal.dart';
 
+import '../src/app_version.dart';
 import '../src/image_utils.dart';
 import '../src/pick_bridge.dart';
 import '../src/wam_bridge.dart';
 import '../src/wam_codec.dart';
-import '../src/wam_download.dart';
 
 class EmbedPage extends StatefulWidget {
   const EmbedPage({super.key, this.onGoExtract});
@@ -142,17 +142,6 @@ class _EmbedPageState extends State<EmbedPage> {
     });
   }
 
-  /// Whether the WAM (strong-robust) scheme should be used for this image:
-  /// only for small-ish photos (long edge <= 1024) — WAM embeds at 256px and
-  /// upscales back, which would blur large images. Large images use DWT.
-  Future<bool> _useWam(Uint8List bytes) async {
-    if (!WamBridge.isSupported) return false;
-    final size = await imageSize(bytes);
-    if (size == null) return false;
-    final longEdge = size.$1 > size.$2 ? size.$1 : size.$2;
-    return longEdge <= 1024;
-  }
-
   Future<void> _embed() async {
     if (_imageBytes == null) {
       ScaffoldMessenger.of(context)
@@ -220,7 +209,7 @@ class _EmbedPageState extends State<EmbedPage> {
           if (mounted) {
             setState(() {
               _resultBytes = result;
-              _methodNote = 'Logo 水印（尺寸已适配）';
+              _methodNote = 'Logo 水印 ${logoSize.$1}x${logoSize.$2}（DWT，完整还原）';
             });
           }
         } finally {
@@ -230,46 +219,40 @@ class _EmbedPageState extends State<EmbedPage> {
         }
       } else {
         final text = _textController.text.trim();
-        final useWam = await _useWam(bytes);
-        // WAM is preferred for small images; if it's not applicable, its
-        // models are missing, or inference fails at runtime (e.g. broken
-        // model files), fall back to DWT with the same text instead of
-        // erroring out.
+        // Text watermark: ALWAYS the strong-robust (WAM) scheme, regardless of
+        // image size — the native side now embeds at 256px and reconstructs a
+        // sharp full-resolution output (upscaled delta blended with the sharp
+        // carrier). Survives crop/rotation/compression. On another device only
+        // the 32-bit code is visible (text recovery needs this device's
+        // history). Falls back to DWT text if the models are missing or
+        // inference fails at runtime.
         var wamUnavailable = false;
-        if (useWam && await ensureWamModels(context)) {
-          try {
-            // Strong-robust short code (survives crop/rotation/compression).
-            final bits = WamCodec.textToBits(text);
-            final code = WamCodec.bitsToStr(bits);
-            final small = await WamBridge.resizePng(bytes, 256);
-            if (small == null) throw Exception('图片缩放失败');
-            final wm256 = await WamBridge.embed(small, bits);
-            final size = await imageSize(bytes);
-            final result = (size != null)
-                ? await WamBridge.upscalePng(wm256, size.$1, size.$2) ?? wm256
-                : wm256;
-            await WmHistory.add(WmRecord(
-              kind: 'wam',
-              text: text,
-              code: code,
-              pw: pwWm,
-            ));
-            if (mounted) {
-              setState(() {
-                _resultBytes = result;
-                _wamCode = code;
-                _methodNote = '强鲁棒水印（抗裁剪/旋转/压缩）';
-              });
-            }
-          } catch (_) {
-            wamUnavailable = true;
+        try {
+          final modelsDir = await WamBridge.getModelsDir();
+          if (modelsDir == null) throw Exception('模型目录不可用');
+          final bits = WamCodec.textToBits(text);
+          final code = WamCodec.bitsToStr(bits);
+          final result =
+              await compute(wamEmbedIsolate, (bytes, bits, modelsDir));
+          await WmHistory.add(WmRecord(
+            kind: 'wam',
+            text: text,
+            code: code,
+            pw: pwWm,
+          ));
+          if (mounted) {
+            setState(() {
+              _resultBytes = result;
+              _wamCode = code;
+              _methodNote = '强鲁棒水印（抗裁剪/旋转/压缩）';
+            });
           }
-        } else {
-          wamUnavailable = useWam;
+        } catch (_) {
+          wamUnavailable = true;
         }
-        if (!useWam || wamUnavailable) {
-          // Long text on large image: DWT keeps full resolution.
-          // Capacity check first: text bits must fit the 4x4 block grid.
+        if (wamUnavailable) {
+          // Fallback: DWT text (legacy scheme / model missing). Capacity
+          // check first: text bits must fit the 4x4 block grid.
           final size = await imageSize(bytes);
           var carrier = bytes;
           if (size != null) {
@@ -296,9 +279,7 @@ class _EmbedPageState extends State<EmbedPage> {
             setState(() {
               _resultBytes = result.$1;
               _wmBitLength = result.$2;
-              _methodNote = wamUnavailable
-                  ? '文本水印（强鲁棒不可用，已自动回退）'
-                  : '文本水印（尺寸已适配）';
+              _methodNote = '文本水印（强鲁棒不可用，已自动回退）';
             });
           }
         }
@@ -405,39 +386,17 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 16),
 
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeIn,
-              transitionBuilder: (child, animation) =>
-                  FadeTransition(opacity: animation, child: child),
-              child: SizedBox(
-                key: ValueKey(_inputType),
-                height: 96,
-                child: _inputType == _InputType.text
-                    ? TextField(
-                        controller: _textController,
-                        maxLines: 2,
-                        decoration: const InputDecoration(
-                          labelText: '水印内容',
-                          hintText: '输入要隐藏的文本（如作者名、链接）',
-                          border: OutlineInputBorder(),
-                          alignLabelWithHint: true,
-                        ),
-                      )
-                    : OutlinedButton.icon(
-                        onPressed: _pickLogo,
-                        icon: const Icon(Icons.add_photo_alternate_outlined),
-                        label: Text(_logoBytes == null
-                            ? '选择 Logo 图片'
-                            : 'Logo: $_logoName'),
-                      ),
-              ),
+            _ModeSwitcher(
+              inputType: _inputType,
+              textController: _textController,
+              logoBytes: _logoBytes,
+              logoName: _logoName,
+              onPickLogo: _pickLogo,
             ),
             const SizedBox(height: 8),
 
             Text(
-              '无需选择方案：小图自动使用强鲁棒水印（抗裁剪/旋转/压缩），大图与 Logo 自动适配尺寸（超大图先缩至 2048px 内以保证稳定）',
+              '无需选择方案：文本水印一律使用强鲁棒方案（抗裁剪/旋转/压缩），Logo 使用 DWT 方案完整还原',
               style: TextStyle(
                 color: colorScheme.onSurfaceVariant,
                 fontSize: 12,
@@ -560,7 +519,7 @@ class _EmbedPageState extends State<EmbedPage> {
                                         const Spacer(),
                                         if (_wamCode != null)
                                           Text(
-                                            '标识 ${_wamCode!.substring(0, 8)}…',
+                                            '强鲁棒 32 位码',
                                             style: TextStyle(
                                               color: colorScheme.primary,
                                               fontWeight: FontWeight.bold,
@@ -584,6 +543,23 @@ class _EmbedPageState extends State<EmbedPage> {
                                             color:
                                                 colorScheme.onSurfaceVariant,
                                             fontSize: 12),
+                                      ),
+                                    ],
+                                    if (_wamCode != null) ...[
+                                      const SizedBox(height: 4),
+                                      SelectableText(
+                                        '标识码：$_wamCode',
+                                        style: TextStyle(
+                                            color:
+                                                colorScheme.onSurfaceVariant,
+                                            fontSize: 12,
+                                            letterSpacing: 1),
+                                      ),
+                                      Text(
+                                        '对方在其他设备提取时可见此 32 位码，可用它验证水印归属',
+                                        style: TextStyle(
+                                            color: colorScheme.outline,
+                                            fontSize: 11),
                                       ),
                                     ],
                                     const SizedBox(height: 4),
@@ -621,9 +597,7 @@ class _EmbedPageState extends State<EmbedPage> {
                   : const SizedBox.shrink(),
             ),
             const SizedBox(height: 24),
-            Text(
-              '盲水印 v1.1.12',
-              textAlign: TextAlign.center,
+            AppVersionText(
               style: TextStyle(
                 color: colorScheme.outline,
                 fontSize: 11,
@@ -716,6 +690,162 @@ class _ImagePickerCard extends StatelessWidget {
                         color: colorScheme.onSurfaceVariant, fontSize: 12)),
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 文本输入框 ⇄ Logo 选择框切换动画（ui-animation 规范）：
+/// - 内容切换只动 transform/opacity：按 SegmentedButton 的左右布局做方向性滑动
+///   （文本从左侧滑入/滑向左侧退出，Logo 从右侧），220ms，进入曲线 Cubic(0.22,1,0.36,1)
+/// - 高度用 AnimatedSize 做「受控容器缩放」过渡（唯一允许的布局动画）；配合
+///   Positioned.fill 让 Stack 只按当前子项定尺寸，消除切换瞬间的高度跳变（此前卡顿根因）
+/// - 系统开启减弱动画时全部零时长
+class _ModeSwitcher extends StatelessWidget {
+  const _ModeSwitcher({
+    required this.inputType,
+    required this.textController,
+    required this.logoBytes,
+    required this.logoName,
+    required this.onPickLogo,
+  });
+
+  final _InputType inputType;
+  final TextEditingController textController;
+  final Uint8List? logoBytes;
+  final String? logoName;
+  final VoidCallback onPickLogo;
+
+  static const _duration = Duration(milliseconds: 220);
+  static const _curve = Cubic(0.22, 1.0, 0.36, 1.0);
+  static const _slide = 8.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final reduce = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final duration = reduce ? Duration.zero : _duration;
+    final curve = reduce ? Curves.linear : _curve;
+    return AnimatedSize(
+      duration: duration,
+      curve: curve,
+      alignment: Alignment.topCenter,
+      clipBehavior: Clip.hardEdge,
+      child: AnimatedSwitcher(
+        duration: duration,
+        switchInCurve: curve,
+        switchOutCurve: curve,
+        layoutBuilder: (currentChild, previousChildren) {
+          if (currentChild == null) return const SizedBox.shrink();
+          return Stack(
+            fit: StackFit.loose,
+            alignment: Alignment.topCenter,
+            children: [
+              for (final c in previousChildren)
+                Positioned.fill(child: IgnorePointer(child: c)),
+              currentChild,
+            ],
+          );
+        },
+        transitionBuilder: (child, animation) {
+          // 方向性滑动：文本（左）从左侧进入、滑向左侧退出；Logo（右）反之。
+          final fromLeft = child.key == const ValueKey(_InputType.text);
+          final offset = Tween(
+            begin: Offset(fromLeft ? -_slide : _slide, 0),
+            end: Offset.zero,
+          ).animate(animation);
+          return FadeTransition(
+            opacity: animation,
+            child: SlideTransition(position: offset, child: child),
+          );
+        },
+        child: SizedBox(
+          key: ValueKey(inputType),
+          child: inputType == _InputType.text
+              ? TextField(
+                  controller: textController,
+                  minLines: 1,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: '水印内容',
+                    hintText: '输入要隐藏的文本（如作者名、链接）',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                )
+              : _LogoPicker(
+                  logoBytes: logoBytes,
+                  logoName: logoName,
+                  onPick: onPickLogo,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Logo 选择区：带边框铺满所在槽位，
+/// 未选择时居中图标+文案，已选择时显示缩略图预览。
+class _LogoPicker extends StatelessWidget {
+  const _LogoPicker({
+    required this.logoBytes,
+    required this.logoName,
+    required this.onPick,
+  });
+
+  final Uint8List? logoBytes;
+  final String? logoName;
+  final VoidCallback onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onPick,
+        child: Center(
+          child: logoBytes == null
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add_photo_alternate_outlined,
+                        size: 26, color: colorScheme.primary),
+                    const SizedBox(height: 6),
+                    Text(
+                      '点击选择 Logo 图片',
+                      style: TextStyle(
+                          color: colorScheme.onSurfaceVariant, fontSize: 13),
+                    ),
+                  ],
+                )
+              : Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.memory(logoBytes!,
+                            width: 44, height: 44, fit: BoxFit.cover),
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          logoName ?? 'Logo 已选择',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: colorScheme.onSurfaceVariant,
+                              fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
         ),
       ),
     );

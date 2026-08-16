@@ -1,134 +1,123 @@
-import 'dart:ui' as ui;
+import 'dart:ffi';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' show Canvas, FilterQuality, Paint, Rect;
-import 'package:flutter/services.dart';
+import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' hide Size;
+import 'package:flutter/services.dart' hide Size;
+import 'package:flutter_blind_watermark/src/blind_watermark_bindings.dart';
 
-/// Bridge to the Android ONNX Runtime WAM (Watermark Anything) models.
+/// WAM embed in a background isolate (top-level, AOT-safe).
+Uint8List wamEmbedIsolate((Uint8List, List<int>, String) args) {
+  final (png, bits, modelsDir) = args;
+  WamBridge.setModelsDir(modelsDir);
+  return WamBridge.embedSync(png, bits);
+}
+
+/// WAM extract in a background isolate; returns (ok, bits).
+(bool, List<int>) wamExtractIsolate((Uint8List, String) args) {
+  final (png, modelsDir) = args;
+  WamBridge.setModelsDir(modelsDir);
+  try {
+    return (true, WamBridge.extractSync(png));
+  } catch (_) {
+    return (false, const []);
+  }
+}
+
 ///
-/// WAM: Meta ICLR 2025, MIT. 32-bit message, robust to crop/rotation/JPEG.
-/// Models are bundled in the APK assets (no download needed).
-/// embed: image -> 256px -> model -> watermarked 256px PNG
-/// extract: image -> 256px -> model -> 32 decoded bits
+/// The previous implementation used the ai.onnxruntime Java/JNI bridge, which
+/// aborts with SIGABRT inside sess.run on Android 16 (ART JNI fatal). The ORT
+/// C core was verified locally with the exact same models and shapes; calling
+/// it from Dart FFI removes the failing Java/JNI layer entirely.
 class WamBridge {
-  static const MethodChannel _channel = MethodChannel('wam');
-
   static bool get isSupported =>
       !kIsWeb && (defaultTargetPlatform == TargetPlatform.android);
 
-  /// True when both models are available (bundled in assets).
-  static Future<bool> modelReady() async {
-    if (!isSupported) return false;
-    return await _channel.invokeMethod<bool>('modelReady') ?? false;
-  }
+  static const int _errCap = 512;
 
-  /// Watermark an image with a 32-bit message.
-  /// Returns a 256x256 PNG.
-  static Future<Uint8List> embed(
-      Uint8List imageBytes, List<int> bits) async {
-    final result = await _channel.invokeMethod<Uint8List>('embed', {
-      'img': imageBytes,
-      'bits': bits.map((b) => b > 0 ? 1.0 : 0.0).toList(),
-    });
-    if (result == null) {
-      throw Exception('WAM embed returned null');
-    }
-    return result;
-  }
-
-  /// Decode a 32-bit message from an image.
-  ///
-  /// The image is downscaled to 256px first: Android MethodChannel payloads
-  /// are limited to roughly 1MB (binder transaction size), and full-size
-  /// photos would exceed it.
-  static Future<List<int>> extract(Uint8List imageBytes) async {
-    final small = await resizePng(imageBytes, 256);
-    if (small == null) throw Exception('图片缩放失败');
-    final result = await _channel.invokeMethod<List<dynamic>>(
-        'extract', {'img': small});
-    if (result == null) {
-      throw Exception('WAM extract returned null');
-    }
-    return result.map((e) => (e as num).toInt()).toList();
-  }
-
-  /// Downscale an image to fit within [maxDim] (keeps aspect ratio),
-  /// returns PNG bytes. Used before WAM embed (256 input).
-  static Future<Uint8List?> resizePng(Uint8List bytes, int maxDim) async {
+  /// Directory with the bundled model files, extracted by the host app
+  /// (Kotlin filesDir/models). Null when unavailable.
+  static Future<String?> getModelsDir() async {
+    if (!isSupported) return null;
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      try {
-        final frame = await codec.getNextFrame();
-        final img = frame.image;
-        try {
-          final w = img.width;
-          final h = img.height;
-          final scale = maxDim / (w > h ? w : h);
-          final tw = (w * scale).round();
-          final th = (h * scale).round();
-          final recorder = ui.PictureRecorder();
-          final canvas = Canvas(recorder);
-          canvas.drawImageRect(
-            img,
-            Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
-            Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
-            Paint()..filterQuality = FilterQuality.medium,
-          );
-          final picture = recorder.endRecording();
-          final out = await picture.toImage(tw, th);
-          try {
-            final data =
-                await out.toByteData(format: ui.ImageByteFormat.png);
-            return data?.buffer.asUint8List();
-          } finally {
-            out.dispose();
-          }
-        } finally {
-          img.dispose();
-        }
-      } finally {
-        codec.dispose();
-      }
+      return await const MethodChannel('wam').invokeMethod<String>('modelDir');
     } catch (_) {
       return null;
     }
   }
 
-  /// Upscale a 256x256 PNG to [targetW]x[targetH].
-  static Future<Uint8List?> upscalePng(
-      Uint8List bytes, int targetW, int targetH) async {
+  /// Sets the directory containing wam_embedder.onnx / wam_extractor_int8.onnx
+  /// (extracted by the host app). Must be called in the isolate that runs the
+  /// inference.
+  static void setModelsDir(String dir) {
+    final b = BlindWatermarkBindings.instance;
+    final p = dir.toNativeUtf8();
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
+      b.bwm_wam_set_models_dir(p);
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  /// Watermark [pngBytes] (any size — the native side stretches to 256) with
+  /// a 32-bit message. Returns the watermarked 256x256 PNG.
+  static Uint8List embedSync(Uint8List pngBytes, List<int> bits) {
+    final b = BlindWatermarkBindings.instance;
+    final pngPtr = malloc<Uint8>(pngBytes.length);
+    try {
+      pngPtr.asTypedList(pngBytes.length).setAll(0, pngBytes);
+      final msg = malloc<Float>(32);
       try {
-        final frame = await codec.getNextFrame();
-        final img = frame.image;
+        for (var i = 0; i < 32; i++) {
+          msg[i] = i < bits.length && bits[i] > 0 ? 1.0 : 0.0;
+        }
+        final outPtr = malloc<Pointer<Uint8>>();
+        final outLen = malloc<Size>();
+        final err = malloc<Uint8>(_errCap).cast<Utf8>();
         try {
-          final recorder = ui.PictureRecorder();
-          final canvas = Canvas(recorder);
-          canvas.drawImageRect(
-            img,
-            Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-            Rect.fromLTWH(
-                0, 0, targetW.toDouble(), targetH.toDouble()),
-            Paint()..filterQuality = FilterQuality.medium,
-          );
-          final picture = recorder.endRecording();
-          final out = await picture.toImage(targetW, targetH);
-          try {
-            final data =
-                await out.toByteData(format: ui.ImageByteFormat.png);
-            return data?.buffer.asUint8List();
-          } finally {
-            out.dispose();
+          final rc = b.bwm_wam_embed(
+              pngPtr, pngBytes.length, msg, outPtr, outLen, err, _errCap);
+          if (rc != 0) {
+            throw Exception('WAM embed failed: ${err.toDartString()}');
           }
+          final len = outLen.value;
+          final data = Uint8List.fromList(outPtr.value.asTypedList(len));
+          b.bwm_free_buffer(outPtr.value.cast());
+          return data;
         } finally {
-          img.dispose();
+          malloc.free(outPtr);
+          malloc.free(outLen);
+          malloc.free(err);
         }
       } finally {
-        codec.dispose();
+        malloc.free(msg);
       }
-    } catch (_) {
-      return null;
+    } finally {
+      malloc.free(pngPtr);
+    }
+  }
+
+  /// Decodes the 32-bit message from [pngBytes].
+  static List<int> extractSync(Uint8List pngBytes) {
+    final b = BlindWatermarkBindings.instance;
+    final pngPtr = malloc<Uint8>(pngBytes.length);
+    try {
+      pngPtr.asTypedList(pngBytes.length).setAll(0, pngBytes);
+      final bits = malloc<Uint8>(32);
+      final err = malloc<Uint8>(_errCap).cast<Utf8>();
+      try {
+        final rc =
+            b.bwm_wam_extract(pngPtr, pngBytes.length, bits, err, _errCap);
+        if (rc != 0) {
+          throw Exception('WAM extract failed: ${err.toDartString()}');
+        }
+        return List<int>.generate(32, (i) => bits[i] != 0 ? 1 : 0);
+      } finally {
+        malloc.free(bits);
+        malloc.free(err);
+      }
+    } finally {
+      malloc.free(pngPtr);
     }
   }
 }

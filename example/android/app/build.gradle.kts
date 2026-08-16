@@ -53,10 +53,13 @@ android {
     }
 }
 
+// No Java dependencies: the WAM inference engine lives in the FFI library
+// (src/wam_ort.cpp) and talks to the ONNX Runtime C API directly via
+// dlopen("libonnxruntime.so"). The .so (1.29.0) is vendored under
+// src/main/jniLibs/ — the previous ai.onnxruntime Java/JNI bridge aborted
+// with SIGABRT inside sess.run on Android 16 (ART JNI fatal), which is why
+// the whole Java inference layer was removed.
 dependencies {
-    // 1.29.0: Android 16 (SDK 36) compatibility — 1.28.0 predates it and
-    // aborts inside sess.run on Android 16 devices (Xiaomi 14).
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
 }
 
 flutter {

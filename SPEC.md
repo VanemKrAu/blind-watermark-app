@@ -3,8 +3,10 @@
 ## 目标
 
 安卓应用：选择图片 → 本地离线嵌入盲水印（文本 / Logo 图）→ 保存；可提取验证。
-App 内嵌入/提取**自洽闭环**（同一方案打的水印，App 内必定可提取）。算法源自
-[guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），
+**文本水印一律走 WAM 强鲁棒**（32 位标识码，抗裁剪/旋转/压缩；完整文字仅本机还原），
+**Logo 走 DWT**（完整还原）。算法源自
+[guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT）与
+[facebookresearch/watermark-anything](https://github.com/facebookresearch/watermark-anything)（MIT），
 **与参考库的 bit 级互通不再作为产品约束**（2026-08 决策）。
 
 ## 核心约束（不可破坏）
@@ -36,7 +38,7 @@ App 内嵌入/提取**自洽闭环**（同一方案打的水印，App 内必定�
 - Material 3 原生风格（谷歌原生观感），跟随系统深浅色，中文界面
 - 全部处理在本地（隐私）；无网络依赖
 - 大图处理放后台 Isolate，不阻塞 UI
-- 密码（passwordWm/passwordImg）嵌入/提取必须一致；提取文本需 bit 长度，提取 Logo 需原始宽高（本机记录自动带入）
+- 密码（passwordWm/passwordImg）嵌入/提取必须一致；提取文本需 bit 长度，提取 Logo 需原始宽高（本机记录自动带入；**他人图片走「手动提取参数」手动输入**）
 
 ## 回归测试
 
@@ -47,5 +49,6 @@ App 内嵌入/提取**自洽闭环**（同一方案打的水印，App 内必定�
 ## 范围边界
 
 - 支持输入：PNG/JPEG/WebP/BMP/GIF（HEIC 等经 Flutter 引擎转 PNG）；输出：PNG
-- 水印容量：bit 数 < 图片 4×4 块数（块数 = (h/8)×(w/8)，512×512 图 ≈ 4096 bit）
+- DWT 容量：bit 数 < 图片 4×4 块数（块数 = (h/8)×(w/8)，512×512 图 ≈ 4096 bit）；WAM 容量固定 32 bit（文本→CRC32 标识码，任意文本长度均可容纳）
+- WAM 文本水印：嵌入在 256px，输出保持载体原分辨率锐利（delta 放大与锐利原图混合）；提取端统一缩放 256px，任意图幅可提取
 - 不做：可见水印、视频水印、去水印

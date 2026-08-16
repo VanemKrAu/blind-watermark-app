@@ -44,6 +44,10 @@ app.*.map.json
 *.dylib
 *.a
 *.o
+*.exe
+
+# Local scratch / agent temp (not for version control)
+.local/
 
 # Example app build
 /example/build/

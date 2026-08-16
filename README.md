@@ -1,7 +1,7 @@
 # Blind Watermark App（盲水印）
 
-基于 DWT-DCT-SVD 算法的图片盲水印工具：**嵌入水印无需原图即可提取**（盲水印）。
-安卓 App（Flutter + C++ FFI），核心算法源自 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），App 内嵌入/提取自洽闭环；**与参考库的互通不再作为约束**（大图会先缩放至 2048px 内，仅保证 App 内一致）。
+基于 DWT-DCT-SVD + WAM 的图片盲水印工具：**嵌入水印无需原图即可提取**（盲水印）。
+安卓 App（Flutter + C++ FFI），核心算法源自 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），App 内嵌入/提取自洽闭环；**与参考库的互通不再作为约束**（大图会先缩放至 1536px 内，仅保证 App 内一致）。
 
 ## 目录结构
 
@@ -16,7 +16,7 @@ blind-watermark-app/
 │  └─ blind_watermark_ffi.*  # C ABI 接口（Dart FFI 调用）+ 原生崩溃捕获
 ├─ lib/            Dart 层（FFI 绑定 + 嵌入/提取 API）
 ├─ example/        安卓 App（Material 3 原生风格，中文界面）
-│  └─ lib/pages/   embed_page.dart（嵌入）/ extract_page.dart（提取）
+│  └─ lib/pages/   embed_page.dart（嵌入）/ extract_page.dart（提取）/ about_page.dart（关于）
 ├─ android/ ios/ windows/  平台工程
 └─ tools/interop/  算法回归测试（Python↔C++ 双向对拍，非强制互通约束）
 ```
@@ -24,9 +24,9 @@ blind-watermark-app/
 ## 功能
 
 - **嵌入**：选图 → 输入文本或 Logo 图 → （可选密码）→ 输出打水印的图
-- **提取**：选图 → 自动识别（零参数）→ 还原文本 / Logo / 强鲁棒标识
+- **提取**：选图 → 自动识别（零参数）→ 还原文本 / Logo / 强鲁棒标识；他人图片可用「手动提取参数」
 - 单一入口：嵌入 = 选图 + 输入 + 一个按钮；提取 = 选图 + 一个按钮
-- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（超大图先自动缩放至 2048px 内，兼顾画质与稳定性）
+- **方案策略**：文本水印一律用强鲁棒方案（WAM，抗裁剪/旋转/压缩，输出保持原分辨率锐利）；Logo 水印用 DWT（完整还原，超大图先自动缩放至 1536px 内）
 - 全部本地离线处理，图片不上传；模型已内置在安装包内，开箱即用
 
 ## 致谢与参考的开源项目
@@ -40,7 +40,7 @@ blind-watermark-app/
 | [facebookresearch/watermark-anything](https://github.com/facebookresearch/watermark-anything) | WAM 强鲁棒水印模型（Meta，ICLR 2025） | MIT |
 | [Eigen](https://eigen.tuxfamily.org/) | 线性代数库（SVD/DCT） | MPL2 |
 | [stb](https://github.com/nothings/stb) | 图像编解码（PNG/JPEG/BMP/WebP） | Public Domain/MIT |
-| [ONNX Runtime](https://github.com/microsoft/onnxruntime) | Android 端模型推理 | MIT |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) | WAM 推理（C++ FFI 直调 C API，无 Java/JNI 层） | MIT |
 | [Flutter](https://flutter.dev/) | 跨平台 UI 框架 | BSD-3 |
 
 WAM 模型（ONNX，含 int8 量化版）已内置在安装包内。注意：`VanemKrAu/blind-watermark-models` Release 里的 embedder 缺外部数据文件（不可直接用）；App 现用自包含 embedder，由 `tools/wam/export_embedder_selfcontained.py` 从 Meta 官方 checkpoint 导出。
@@ -52,7 +52,7 @@ WAM 模型（ONNX，含 int8 量化版）已内置在安装包内。注意：`Va
 
 ```bash
 flutter build apk --release
-# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 155MB，模型内置）
+# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 161MB，模型内置）
 ```
 
 ## 算法回归测试
@@ -75,19 +75,19 @@ g++ -std=c++17 -O2 bwm_cli.cpp ../../src/{numpy_rng,watermark_core,dct,dwt,color
 ## 使用提示
 
 - **单一入口**：嵌入 = 选图 + 输入文本/Logo + 一个按钮；提取 = 选图 + 一个按钮（全自动，零参数）
-- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（超大图先自动缩放至 2048px 内）
-- 提取依赖**本机嵌入记录**（最近 100 条）：请在嵌入水印的同一台设备上提取；强鲁棒标识可在任何设备识别出 32 位码
+- **方案策略**：文本水印一律强鲁棒（WAM，任意图幅，抗裁剪/旋转/压缩）；Logo 用 DWT（超大图先自动缩放至 1536px 内）
+- 提取依赖**本机嵌入记录**（最近 100 条）：本机自动还原完整文本 / Logo；**他人图片**可在「手动提取参数」输入密码 + 长度（文本）或 Logo 尺寸（图片）；强鲁棒标识可在任何设备识别出 32 位码
 
 ## 安全模型
 
 - **密码**：嵌入时「高级选项」可设置水印密码（默认 1）。密码参与水印的随机打乱，**提取方必须使用相同密码**才能还原
 - **本机自动**：密码/长度等参数保存在本机嵌入记录中，本机提取无需手动输入
-- **他人拿到图片**：不知道密码 + 不知道长度/尺寸 → 无法还原文本/Logo 水印；强鲁棒模式只能看到一串 32 位标识码（无本机记录时无意义）
-- **局限（如实说明）**：① DWT 密码是整数种子，短密码可被暴力枚举（建议设较复杂的数字）② 本地记录为明文存储（root 设备可读）③ 跨设备提取需要同一套参数（本机记录不跨设备）
+- **他人拿到图片**：不知道密码 + 不知道长度/尺寸 → 无法还原文本/Logo 水印；强鲁棒（WAM）文本水印在任何设备只能看到一串 32 位标识码（完整文字仅嵌入设备本机可还原）
+- **局限（如实说明）**：① DWT 密码是整数种子，短密码可被暴力枚举（建议设较复杂的数字）② 本地记录为明文存储（root 设备可读）③ 跨设备提取需要同一套参数（本机记录不跨设备，可用「手动提取参数」补足）
 
 ## 鲁棒性（实测，1024×768 测试图）
 
-| 攻击 | DWT 文本/Logo | WAM 强鲁棒 |
+| 攻击 | DWT（Logo） | WAM 强鲁棒（文本，任意图幅） |
 |---|---|---|
 | JPEG 压缩 q50~q95 | ✅ 完美 | ✅ 完美（q70 起个别位错，靠历史匹配容忍） |
 | 高斯模糊 3/5/7 | ✅ | ✅ |
@@ -97,3 +97,5 @@ g++ -std=c++17 -O2 bwm_cli.cpp ../../src/{numpy_rng,watermark_core,dct,dwt,color
 | 旋转 5° | ❌ | ✅（局部水印模式） |
 | 裁剪（保留 75%） | ❌ | ✅（局部水印模式） |
 | 裁剪 50% 以下 / 强噪声 | ❌ | ❌（技术边界，业界普遍） |
+
+注：WAM 文本水印现在用于**任意图幅**（嵌入在 256px、输出保持载体原分辨率锐利），实测 4000×3000 大图放大后仍可 0 误差提取。
