@@ -54,7 +54,9 @@ android {
 }
 
 dependencies {
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
+    // 1.29.0: Android 16 (SDK 36) compatibility — 1.28.0 predates it and
+    // aborts inside sess.run on Android 16 devices (Xiaomi 14).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
 }
 
 flutter {

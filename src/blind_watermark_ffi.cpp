@@ -35,6 +35,12 @@ namespace {
 // system still produces its own tombstone.
 // ---------------------------------------------------------------------------
 char g_crash_log[1024] = {0};
+// Heap buffer for /proc/self/maps, allocated ONCE at library load (normal
+// context). The maps file on modern devices (Android 16 + Flutter + ORT)
+// exceeds 192KB; a stack buffer that large is unsafe in a signal handler and
+// a truncated map made every address unresolvable.
+char* g_maps_buf = nullptr;
+constexpr size_t kMapsBufSize = 1048576;
 
 #ifndef _WIN32
 namespace {
@@ -193,20 +199,25 @@ void crash_handler(int sig, siginfo_t* si, void* uc) {
             }
 #endif
 
-            // Module map (parsed once, reused for every address). 192KB is
-            // enough for the whole file on normal apps (a truncated map made
-            // the high-address system libs unresolvable on Xiaomi).
-            char maps[196608];
+            // Module map (parsed once, reused for every address). Read into
+            // the pre-allocated heap buffer — the file can exceed 192KB on
+            // modern devices and a truncated map made system libs (libc at
+            // 0x73...) unresolvable on Xiaomi.
+            char* maps = g_maps_buf;
             size_t mapslen = 0;
-            {
+            if (maps != nullptr) {
                 int mfd = open("/proc/self/maps", O_RDONLY);
                 if (mfd >= 0) {
-                    ssize_t r = read(mfd, maps, sizeof(maps) - 1);
-                    close(mfd);
-                    if (r > 0) {
-                        mapslen = static_cast<size_t>(r);
-                        maps[mapslen] = 0;
+                    ssize_t total = 0;
+                    while (total < static_cast<ssize_t>(kMapsBufSize - 1)) {
+                        ssize_t r = read(mfd, maps + total,
+                                         kMapsBufSize - 1 - static_cast<size_t>(total));
+                        if (r <= 0) break;
+                        total += r;
                     }
+                    close(mfd);
+                    mapslen = static_cast<size_t>(total);
+                    maps[mapslen] = 0;
                 }
             }
 
@@ -313,6 +324,10 @@ struct CrashGuard {
         } else {
             snprintf(g_crash_log, sizeof(g_crash_log),
                      "/data/user/0/com.example.flutter_blind_watermark_example/files/crash.txt");
+        }
+        // Allocate the maps buffer in normal context (never in the handler).
+        if (g_maps_buf == nullptr) {
+            g_maps_buf = new (std::nothrow) char[kMapsBufSize];
         }
     }
 } g_crash_guard;
