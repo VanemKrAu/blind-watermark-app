@@ -475,54 +475,92 @@ class _ExtractPageState extends State<ExtractPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeIn,
-                  transitionBuilder: (child, animation) =>
-                      FadeTransition(opacity: animation, child: child),
-                  child: SizedBox(
-                    key: ValueKey(_extractType),
-                    height: _extractType == _ExtractType.auto ? 0 : 72,
-                    child: _extractType == _ExtractType.text
-                        ? TextField(
-                            controller: _lenController,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: '水印长度（bit）',
-                              hintText: '嵌入结果会显示长度，如 119',
-                              border: OutlineInputBorder(),
+                // 与嵌入页同款动画：AnimatedSize 单阶段高度变形（自动→文本/Logo
+                // 平滑展开，顶对齐）+ 方向性滑动淡入淡出；退场子项保持自然高度
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Cubic(0.22, 1.0, 0.36, 1.0),
+                  alignment: Alignment.topCenter,
+                  clipBehavior: Clip.hardEdge,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 240),
+                    switchInCurve: Cubic(0.22, 1.0, 0.36, 1.0),
+                    switchOutCurve: Curves.easeIn,
+                    layoutBuilder: (currentChild, previousChildren) {
+                      if (currentChild == null) {
+                        return const SizedBox.shrink();
+                      }
+                      return Stack(
+                        fit: StackFit.loose,
+                        alignment: Alignment.topCenter,
+                        children: [
+                          for (final c in previousChildren)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              top: 0,
+                              child: IgnorePointer(child: c),
                             ),
-                          )
-                        : _extractType == _ExtractType.image
-                            ? Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _wController,
-                                      keyboardType: TextInputType.number,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Logo 宽',
-                                        hintText: '嵌入时 Logo 尺寸',
-                                        border: OutlineInputBorder(),
+                          currentChild,
+                        ],
+                      );
+                    },
+                    transitionBuilder: (child, animation) {
+                      // 方向性：自动/文本（左）从左侧滑入，Logo（右）从右侧滑入
+                      final fromLeft =
+                          child.key != const ValueKey(_ExtractType.image);
+                      final offset = Tween(
+                        begin: Offset(fromLeft ? -10.0 : 10.0, 0),
+                        end: Offset.zero,
+                      ).animate(animation);
+                      return FadeTransition(
+                        opacity: animation,
+                        child:
+                            SlideTransition(position: offset, child: child),
+                      );
+                    },
+                    child: SizedBox(
+                      key: ValueKey(_extractType),
+                      child: _extractType == _ExtractType.auto
+                          ? const SizedBox.shrink()
+                          : _extractType == _ExtractType.text
+                              ? TextField(
+                                  controller: _lenController,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: '水印长度（bit）',
+                                    hintText: '嵌入结果会显示长度，如 119',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                )
+                              : Row(
+                                  children: [
+                                    Expanded(
+                                      child: TextField(
+                                        controller: _wController,
+                                        keyboardType: TextInputType.number,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Logo 宽',
+                                          hintText: '嵌入时 Logo 尺寸',
+                                          border: OutlineInputBorder(),
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _hController,
-                                      keyboardType: TextInputType.number,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Logo 高',
-                                        hintText: '嵌入时 Logo 尺寸',
-                                        border: OutlineInputBorder(),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: TextField(
+                                        controller: _hController,
+                                        keyboardType: TextInputType.number,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Logo 高',
+                                          hintText: '嵌入时 Logo 尺寸',
+                                          border: OutlineInputBorder(),
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                ],
-                              )
-                            : const SizedBox.shrink(),
+                                  ],
+                                ),
+                    ),
                   ),
                 ),
               ],

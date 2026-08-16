@@ -193,23 +193,26 @@ class MainActivity : FlutterActivity() {
         if (reportShownThisProcess) return
         reportShownThisProcess = true
         try {
+            // Collect crash files FIRST: the "no crash" case must stay silent.
+            // (Previous code prepended the DEVICE line unconditionally, making
+            // the report non-empty on every launch -> dialog every time.)
             val sb = StringBuilder()
-            sb.append("DEVICE: ")
-                .append(Build.MANUFACTURER)
-                .append(" ")
-                .append(Build.MODEL)
-                .append(" | Android ")
-                .append(Build.VERSION.RELEASE)
-                .append(" (SDK ")
-                .append(Build.VERSION.SDK_INT)
-                .append(")\n")
             for (f in listOf(File(filesDir, "crash.txt"), File(cacheDir, "crash.txt"))) {
                 if (f.exists()) {
                     sb.append(f.readText()).append("\n")
                 }
             }
             if (sb.isNotEmpty()) {
-                val report = sb.toString()
+                val report = "DEVICE: "
+                    .plus(Build.MANUFACTURER)
+                    .plus(" ")
+                    .plus(Build.MODEL)
+                    .plus(" | Android ")
+                    .plus(Build.VERSION.RELEASE)
+                    .plus(" (SDK ")
+                    .plus(Build.VERSION.SDK_INT)
+                    .plus(")\n")
+                    .plus(sb)
                 // Surface it through Flutter (Material 3 dialog) as soon as
                 // the Dart side is ready; system AlertDialog as fallback.
                 val handler = android.os.Handler(android.os.Looper.getMainLooper())

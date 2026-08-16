@@ -30,9 +30,10 @@ android {
         versionName = flutter.versionName
 
         ndk {
-            // Keep the two ABIs covering virtually all devices; this drops
-            // ~34MB of x86/x86_64 ONNX Runtime binaries from the APK.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // 64-bit only (user decision): virtually all devices since ~2017
+            // are arm64-v8a; dropping armeabi-v7a saves the 32-bit ONNX
+            // Runtime binary (~23MB) and the v7a FFI build.
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -46,9 +47,15 @@ android {
 
     packaging {
         jniLibs {
-            // Drop x86/x86_64 ONNX Runtime binaries (emulator-only ABIs):
-            // saves ~34MB per APK.
-            excludes += listOf("**/x86_64/*.so", "**/x86/*.so")
+            // 64-bit only (user decision): strip x86/x86_64 (emulator-only,
+            // ~34MB) and armeabi-v7a (~23MB) native libs from the APK.
+            // (The Flutter Gradle plugin resets ndk.abiFilters to all ABIs,
+            // so packaging excludes are the reliable filter for engine libs.)
+            excludes += listOf(
+                "**/x86_64/*.so",
+                "**/x86/*.so",
+                "**/armeabi-v7a/*.so",
+            )
         }
     }
 }

@@ -18,8 +18,8 @@ FONT = os.path.join(os.path.dirname(__file__), "..", "..", ".local", "flutter",
 if not os.path.exists(FONT):
     raise SystemExit(f"MaterialIcons 字体不存在: {FONT}")
 
-# M3 blue seed 基线色板（与 About 页 CircleAvatar 完全一致）
-BG = (214, 227, 255)   # primaryContainer #D6E3FF
+# M3 blue seed 基线色板（与 About 页 CircleAvatar 一致的水滴色；背景按用户要求为白色）
+BG = (255, 255, 255)   # 白色背景
 DROP = (11, 87, 208)   # primary #0B57D0
 GLYPH = 0xF05A2        # Icons.water_drop
 SS = 4                 # 超采样倍数（抗锯齿）
@@ -62,14 +62,15 @@ def main():
     for dens, size in legacy.items():
         bg = Image.new("RGB", (size, size), BG)
         icon = Image.alpha_composite(bg.convert("RGBA"),
-                                     draw_glyph(size, 0.66))
+                                     draw_glyph(size, 0.42))
         save(icon, os.path.join(f"mipmap-{dens}", "ic_launcher.png"))
         save(icon, os.path.join(f"mipmap-{dens}", "ic_launcher_round.png"))
-    # 自适应前景：透明底 + 安全区内字形（66.6% 安全区，绘制高度取 58%）
+    # 自适应前景：透明底 + 安全区内字形（66.6% 安全区，绘制高度取 40%，
+    # 用户实测小米类泪滴遮罩更小，50%/44% 均被裁切）
     fg = {"mdpi": 108, "hdpi": 162, "xhdpi": 216,
           "xxhdpi": 324, "xxxhdpi": 432}
     for dens, size in fg.items():
-        save(draw_glyph(size, 0.58),
+        save(draw_glyph(size, 0.40),
              os.path.join(f"mipmap-{dens}", "ic_launcher_foreground.png"))
     # 背景色（自适应图标 <background> 引用）
     colors = os.path.join(RES, "values", "colors.xml")

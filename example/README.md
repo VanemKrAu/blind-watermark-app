@@ -16,7 +16,7 @@
 ```bash
 flutter pub get
 flutter build apk --release
-# 输出: build/app/outputs/flutter-apk/app-release.apk（约 161MB）
+# 输出: build/app/outputs/flutter-apk/app-release.apk（约 125MB，模型内置；仅 arm64-v8a）
 ```
 
 模型文件位于 `assets/onnx/`（wam_embedder.onnx 自包含 + wam_extractor_int8.onnx），已在 pubspec 显式声明。

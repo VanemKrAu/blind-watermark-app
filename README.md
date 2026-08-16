@@ -52,7 +52,7 @@ WAM 模型（ONNX，含 int8 量化版）已内置在安装包内。注意：`Va
 
 ```bash
 flutter build apk --release
-# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 161MB，模型内置）
+# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 125MB，模型内置；仅 arm64-v8a）
 ```
 
 ## 算法回归测试

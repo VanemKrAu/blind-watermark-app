@@ -41,10 +41,9 @@ android {
         }
 
         ndk {
-            // Build both 32/64-bit ARM ABIs (the app targets both; a
-            // 32-bit-only device would otherwise have no FFI library and
-            // DWT embedding/extraction would fail).
-            abiFilters 'arm64-v8a', 'armeabi-v7a'
+            // 64-bit only (user decision): arm64-v8a covers virtually all
+            // devices since ~2017; drops the 32-bit FFI build entirely.
+            abiFilters 'arm64-v8a'
         }
     }
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] - 2026-08-16
+
+### Fixed
+- 修复「上次运行发生崩溃」假弹窗：设备信息被无条件拼入报告导致每次启动都判为有崩溃报告；现仅在存在真实崩溃文件时弹窗
+- Logo 选择框比例调整（64px 高、横向紧凑内容）；文本⇄Logo 切换动画重做（退场不拉伸、高度单阶段平滑变形、方向性滑动），提取页手动参数区同款动画
+- 启动图标水滴缩小至 40%（适配各机型遮罩，白底）— 修复部分机型裁切
+
+### Changed
+- **仅适配 64 位（arm64-v8a）**，移除 armeabi-v7a：APK 从 161.7MB 降至 **125.2MB**；32 位设备（2017 年前机型）不再支持
+
 ## [1.1.16] - 2026-08-16
 
 ### Added

@@ -48,8 +48,8 @@ set(SOURCES
 # Create shared library
 add_library(flutter_blind_watermark SHARED ${SOURCES})
 
-# Add WEBP_HAVE_NEON for ARM platforms
-if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a" OR CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+# Add WEBP_HAVE_NEON for ARM platforms (arm64 only — v7a support was dropped)
+if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
     target_compile_definitions(flutter_blind_watermark PRIVATE WEBP_HAVE_NEON)
 endif()
 

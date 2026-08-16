@@ -698,10 +698,13 @@ class _ImagePickerCard extends StatelessWidget {
 
 /// 文本输入框 ⇄ Logo 选择框切换动画（ui-animation 规范）：
 /// - 内容切换只动 transform/opacity：按 SegmentedButton 的左右布局做方向性滑动
-///   （文本从左侧滑入/滑向左侧退出，Logo 从右侧），220ms，进入曲线 Cubic(0.22,1,0.36,1)
-/// - 高度用 AnimatedSize 做「受控容器缩放」过渡（唯一允许的布局动画）；配合
-///   Positioned.fill 让 Stack 只按当前子项定尺寸，消除切换瞬间的高度跳变（此前卡顿根因）
-/// - 系统开启减弱动画时全部零时长
+///   （文本从左侧滑入/滑向左侧退出，Logo 从右侧），10px
+/// - 退场快速淡出（easeIn），入场用进入曲线（Cubic(0.22,1,0.36,1)）——不对称时序
+/// - 高度用 AnimatedSize 做「受控容器缩放」过渡（card-resize 例外）：Stack 只按
+///   当前子项定尺寸，切换瞬间从旧高平滑收缩/展开到新高（240ms，顶对齐），
+///   下方内容随高度变化优雅移动；退场子项用 Positioned(左/右/顶) 保持自然高度
+///   不被拉伸（此前 Positioned.fill 压扁内容是卡顿观感根源）
+/// - 文本（56~80px 自然高度）与 Logo（64px）高度无需一致；系统减弱动画时零时长
 class _ModeSwitcher extends StatelessWidget {
   const _ModeSwitcher({
     required this.inputType,
@@ -717,15 +720,15 @@ class _ModeSwitcher extends StatelessWidget {
   final String? logoName;
   final VoidCallback onPickLogo;
 
-  static const _duration = Duration(milliseconds: 220);
-  static const _curve = Cubic(0.22, 1.0, 0.36, 1.0);
-  static const _slide = 8.0;
+  static const _duration = Duration(milliseconds: 240);
+  static const _enterCurve = Cubic(0.22, 1.0, 0.36, 1.0);
+  static const _slide = 10.0;
 
   @override
   Widget build(BuildContext context) {
     final reduce = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     final duration = reduce ? Duration.zero : _duration;
-    final curve = reduce ? Curves.linear : _curve;
+    final curve = reduce ? Curves.linear : _enterCurve;
     return AnimatedSize(
       duration: duration,
       curve: curve,
@@ -734,15 +737,21 @@ class _ModeSwitcher extends StatelessWidget {
       child: AnimatedSwitcher(
         duration: duration,
         switchInCurve: curve,
-        switchOutCurve: curve,
+        switchOutCurve: reduce ? Curves.linear : Curves.easeIn,
         layoutBuilder: (currentChild, previousChildren) {
           if (currentChild == null) return const SizedBox.shrink();
           return Stack(
             fit: StackFit.loose,
             alignment: Alignment.topCenter,
             children: [
+              // 退场子项：宽度对齐、高度保持自然（不参与 Stack 尺寸，不被拉伸）
               for (final c in previousChildren)
-                Positioned.fill(child: IgnorePointer(child: c)),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: 0,
+                  child: IgnorePointer(child: c),
+                ),
               currentChild,
             ],
           );
@@ -784,8 +793,9 @@ class _ModeSwitcher extends StatelessWidget {
   }
 }
 
-/// Logo 选择区：带边框铺满所在槽位，
-/// 未选择时居中图标+文案，已选择时显示缩略图预览。
+/// Logo 选择区：固定 64px 高的带边框点击区（视觉重量与单行输入框相当），
+/// 内容为紧凑横向单元整体居中（避免上下紧巴/左右大留白）；
+/// 未选择时 图标+文案，已选择时 缩略图预览+文件名。
 class _LogoPicker extends StatelessWidget {
   const _LogoPicker({
     required this.logoBytes,
@@ -800,52 +810,59 @@ class _LogoPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: onPick,
-        child: Center(
-          child: logoBytes == null
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.add_photo_alternate_outlined,
-                        size: 26, color: colorScheme.primary),
-                    const SizedBox(height: 6),
-                    Text(
-                      '点击选择 Logo 图片',
-                      style: TextStyle(
-                          color: colorScheme.onSurfaceVariant, fontSize: 13),
-                    ),
-                  ],
-                )
-              : Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: Image.memory(logoBytes!,
-                            width: 44, height: 44, fit: BoxFit.cover),
-                      ),
-                      const SizedBox(width: 10),
-                      Flexible(
-                        child: Text(
-                          logoName ?? 'Logo 已选择',
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              color: colorScheme.onSurfaceVariant,
-                              fontSize: 13),
+    return SizedBox(
+      height: 64,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: colorScheme.outlineVariant),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onPick,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Center(
+              child: logoBytes == null
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_photo_alternate_outlined,
+                            size: 20, color: colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            '点击选择 Logo 图片',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
+                                fontSize: 14),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                ),
+                      ],
+                    )
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.memory(logoBytes!,
+                              width: 40, height: 40, fit: BoxFit.cover),
+                        ),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Text(
+                            logoName ?? 'Logo 已选择',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
+                                fontSize: 14),
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
         ),
       ),
     );
