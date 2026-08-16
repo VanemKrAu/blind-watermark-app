@@ -1,4 +1,6 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for on-demand WAM model download in release builds -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="盲水印"
         android:name="${applicationName}"

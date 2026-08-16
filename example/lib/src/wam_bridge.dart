@@ -1,16 +1,13 @@
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show Canvas, FilterQuality, Paint, Rect;
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
-
-import 'wam_config.dart';
 
 /// Bridge to the Android ONNX Runtime WAM (Watermark Anything) models.
 ///
 /// WAM: Meta ICLR 2025, MIT. 32-bit message, robust to crop/rotation/JPEG.
+/// Models are bundled in the APK assets (no download needed).
 /// embed: image -> 256px -> model -> watermarked 256px PNG
 /// extract: image -> 256px -> model -> 32 decoded bits
 class WamBridge {
@@ -19,92 +16,10 @@ class WamBridge {
   static bool get isSupported =>
       !kIsWeb && (defaultTargetPlatform == TargetPlatform.android);
 
-  /// True when both models are available (downloaded or bundled in assets).
+  /// True when both models are available (bundled in assets).
   static Future<bool> modelReady() async {
     if (!isSupported) return false;
     return await _channel.invokeMethod<bool>('modelReady') ?? false;
-  }
-
-  /// Re-read model files after a download completed.
-  static Future<void> reloadModels() async {
-    await _channel.invokeMethod<void>('reloadModels');
-  }
-
-  /// Download dir for the models (application support dir/onnx).
-  static Future<Directory> _modelDir() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/onnx');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    return dir;
-  }
-
-  /// Downloads both models with progress reporting.
-  /// [onProgress] receives (downloadedBytes, totalBytes) where totalBytes is
-  /// the combined size of both files (progress never jumps back).
-  static Future<void> downloadModels(
-      void Function(int done, int total) onProgress) async {
-    final dir = await _modelDir();
-    final embedderSize = WamConfig.embedderSizeMb * 1024 * 1024;
-    final extractorSize = WamConfig.extractorSizeMb * 1024 * 1024;
-    final total = embedderSize + extractorSize;
-    var done = 0;
-    await _downloadFile(
-      WamConfig.embedderUrl(),
-      '${dir.path}/${WamConfig.embedderFile}',
-      (d, t) => onProgress(done + d, total),
-    );
-    done += embedderSize;
-    await _downloadFile(
-      WamConfig.extractorUrl(),
-      '${dir.path}/${WamConfig.extractorFile}',
-      (d, t) => onProgress(done + d, total),
-    );
-    await reloadModels();
-  }
-
-  static Future<void> _downloadFile(
-    String url,
-    String dest,
-    void Function(int done, int total) onProgress,
-  ) async {
-    // Write to a .part file and rename on success, so an interrupted
-    // download can never leave a half-written file that is mistaken for a
-    // valid model.
-    final part = '$dest.part';
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 30);
-    IOSink? sink;
-    try {
-      final req = await client.getUrl(Uri.parse(url));
-      final resp = await req.close();
-      if (resp.statusCode != 200) {
-        throw Exception('下载失败（HTTP ${resp.statusCode}）：$url');
-      }
-      final total = resp.contentLength;
-      final file = File(part);
-      sink = file.openWrite();
-      var done = 0;
-      await for (final chunk in resp) {
-        sink.add(chunk);
-        done += chunk.length;
-        if (total > 0) onProgress(done, total);
-      }
-      await sink.flush();
-      await sink.close();
-      sink = null;
-      await File(part).rename(dest);
-    } catch (_) {
-      // Clean up the partial file so a retry starts fresh.
-      try {
-        sink?.close();
-      } catch (_) {}
-      try {
-        if (await File(part).exists()) await File(part).delete();
-      } catch (_) {}
-      rethrow;
-    } finally {
-      client.close(force: true);
-    }
   }
 
   /// Watermark an image with a 32-bit message.

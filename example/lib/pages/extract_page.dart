@@ -43,7 +43,16 @@ class _ExtractPageState extends State<ExtractPage> {
     );
     if (result == null || result.files.isEmpty) return;
     final file = result.files.first;
-    final raw = await File(file.path ?? '').readAsBytes();
+    final path = file.path;
+    final raw = path != null ? await File(path).readAsBytes() : file.bytes;
+    if (raw == null) return;
+    // Delete the file_picker cache copy (some ROM galleries index it).
+    if (path != null) {
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
     final png = await decodeToPng(raw);
     if (png == null) {
       if (mounted) {

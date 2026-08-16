@@ -24,9 +24,10 @@ blind-watermark-app/
 ## 功能
 
 - **嵌入**：选图 → 输入文本或 Logo 图 → （可选密码）→ 输出打水印的图
-- **提取**：选图 → 输入水印长度（bit）或 Logo 尺寸 → 还原文本 / Logo 图
-- 水印对 JPEG 压缩、裁剪等攻击鲁棒；三通道冗余 + 循环嵌入 + k-means 二值化
-- 全部本地离线处理，图片不上传
+- **提取**：选图 → 自动识别（零参数）→ 还原文本 / Logo / 强鲁棒标识
+- 单一入口：嵌入 = 选图 + 输入 + 一个按钮；提取 = 选图 + 一个按钮
+- **自动选方案**：小图（长边 ≤1024）用强鲁棒方案（WAM，抗裁剪/旋转/压缩）；大图与 Logo 用 DWT（保持画质）
+- 全部本地离线处理，图片不上传；模型已内置在安装包内，开箱即用
 
 ## 致谢与参考的开源项目
 
@@ -42,23 +43,16 @@ blind-watermark-app/
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | Android 端模型推理 | MIT |
 | [Flutter](https://flutter.dev/) | 跨平台 UI 框架 | BSD-3 |
 
-WAM 模型（ONNX，含 int8 量化版）托管于 [VanemKrAu/blind-watermark-models](https://github.com/VanemKrAu/blind-watermark-models)，发布版 App 首次使用强鲁棒模式时自动下载。
+WAM 模型（ONNX，含 int8 量化版）已内置在安装包内；原始权重与转换工具见 [VanemKrAu/blind-watermark-models](https://github.com/VanemKrAu/blind-watermark-models) 与 `tools/wam/`。
 
 ## 构建
 
 环境：Flutter SDK + Android SDK（NDK 25.1 + CMake），详见 `E:\WorkSpace\.local\env.ps1`（环境变量定向 E 盘）。
+模型（`example/assets/onnx/`）需从 blind-watermark-models Release 获取后放入，然后：
 
 ```bash
-# 发布版（不含模型，约 35MB；强鲁棒模式首次使用时在线下载模型）
 flutter build apk --release
-
-# 测试版（内置模型，约 130MB，开箱即用）：
-# 先把模型复制进 example/assets/onnx/（wam_embedder.onnx + wam_extractor_int8.onnx，
-# 从 blind-watermark-models Release 下载），再执行上面的构建命令
-# 输出: example/build/app/outputs/flutter-apk/app-release.apk
-
-# 运行（真机/模拟器，热重载）
-flutter run
+# 输出: example/build/app/outputs/flutter-apk/app-release.apk（约 152MB，模型内置）
 ```
 
 ## 互通测试

@@ -37,7 +37,8 @@ class _EmbedPageState extends State<EmbedPage> {
   final TextEditingController _textController = TextEditingController();
   final TextEditingController _passwordController =
       TextEditingController(text: '1');
-  String? _logoPath;
+  Uint8List? _logoBytes;
+  String? _logoName;
 
   bool _processing = false;
   String? _error;
@@ -56,7 +57,18 @@ class _EmbedPageState extends State<EmbedPage> {
     );
     if (result == null || result.files.isEmpty) return;
     final file = result.files.first;
-    final raw = await File(file.path!).readAsBytes();
+    final path = file.path;
+    final raw = path != null ? await File(path).readAsBytes() : file.bytes;
+    if (raw == null) return;
+    // file_picker copies the picked photo into the app cache dir; some ROM
+    // galleries index that directory, so photos appear in the gallery out
+    // of nowhere. Delete the cache copy right away.
+    if (path != null) {
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
     final png = await decodeToPng(raw);
     if (png == null) {
       if (mounted) {
@@ -82,8 +94,20 @@ class _EmbedPageState extends State<EmbedPage> {
       allowMultiple: false,
     );
     if (result == null || result.files.isEmpty) return;
+    final file = result.files.first;
+    final path = file.path;
+    final bytes = path != null ? await File(path).readAsBytes() : file.bytes;
+    if (bytes == null) return;
+    if (path != null) {
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
     setState(() {
-      _logoPath = result.files.first.path;
+
+      _logoBytes = bytes;
+      _logoName = file.name;
       _resultBytes = null;
       _wmBitLength = null;
       _wamCode = null;
@@ -122,7 +146,7 @@ class _EmbedPageState extends State<EmbedPage> {
           .showSnackBar(const SnackBar(content: Text('请输入水印文本')));
       return;
     }
-    if (_inputType == _InputType.image && _logoPath == null) {
+    if (_inputType == _InputType.image && _logoBytes == null) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('请选择水印 Logo 图片')));
       return;
@@ -140,39 +164,47 @@ class _EmbedPageState extends State<EmbedPage> {
     try {
       final bytes = _imageBytes!;
       final inputType = _inputType;
-      // Security: derive DWT seeds from the user password. Empty password
-      // yields a strong random seed (never the well-known default 1).
+      // Security: derive DWT seeds from the user password.
       final (pwWm, pwImg) = WmSecurity.seeds(_passwordController.text);
 
       if (inputType == _InputType.image) {
         // Logo watermark: always DWT (keeps full resolution).
-        final logoPath = _logoPath!;
-        final logoBytes = await File(logoPath).readAsBytes();
-        final logoSize = await imageSize(logoBytes);
-        final size = await imageSize(bytes);
-        if (size == null || logoSize == null) {
-          throw Exception('图片解析失败');
-        }
-        final capacity = (size.$1 ~/ 8) * (size.$2 ~/ 8) - 1;
-        final need = logoSize.$1 * logoSize.$2;
-        if (need > capacity) {
-          throw Exception('Logo 过大：图片最多容纳约 $capacity bit，Logo 需 $need bit。请缩小 Logo 或换更大的图片。');
-        }
-        final result = await compute(
-          _embedLogoIsolate,
-          (bytes, logoPath, pwWm, pwImg),
-        );
-        await WmHistory.add(WmRecord(
-          kind: 'logo',
-          w: logoSize.$1,
-          h: logoSize.$2,
-          pw: pwWm,
-        ));
-        if (mounted) {
-          setState(() {
-            _resultBytes = result;
-            _methodNote = 'Logo 水印（保持画质）';
-          });
+        final logoBytes = _logoBytes!;
+        // The native side loads the logo from a file path; write a temp copy.
+        final tmp = File(
+            '${Directory.systemTemp.path}/bwm_logo_${DateTime.now().millisecondsSinceEpoch}.png');
+        await tmp.writeAsBytes(logoBytes, flush: true);
+        try {
+          final logoSize = await imageSize(logoBytes);
+          final size = await imageSize(bytes);
+          if (size == null || logoSize == null) {
+            throw Exception('图片解析失败');
+          }
+          final capacity = (size.$1 ~/ 8) * (size.$2 ~/ 8) - 1;
+          final need = logoSize.$1 * logoSize.$2;
+          if (need > capacity) {
+            throw Exception('Logo 过大：图片最多容纳约 $capacity bit，Logo 需 $need bit。请缩小 Logo 或换更大的图片。');
+          }
+          final result = await compute(
+            _embedLogoIsolate,
+            (bytes, tmp.path, pwWm, pwImg),
+          );
+          await WmHistory.add(WmRecord(
+            kind: 'logo',
+            w: logoSize.$1,
+            h: logoSize.$2,
+            pw: pwWm,
+          ));
+          if (mounted) {
+            setState(() {
+              _resultBytes = result;
+              _methodNote = 'Logo 水印（保持画质）';
+            });
+          }
+        } finally {
+          try {
+            if (await tmp.exists()) await tmp.delete();
+          } catch (_) {}
         }
       } else {
         final text = _textController.text.trim();
@@ -345,9 +377,9 @@ class _EmbedPageState extends State<EmbedPage> {
                     : OutlinedButton.icon(
                         onPressed: _pickLogo,
                         icon: const Icon(Icons.add_photo_alternate_outlined),
-                        label: Text(_logoPath == null
+                        label: Text(_logoBytes == null
                             ? '选择 Logo 图片'
-                            : 'Logo: ${_logoPath!.split(Platform.pathSeparator).last}'),
+                            : 'Logo: $_logoName'),
                       ),
               ),
             ),
@@ -638,4 +670,6 @@ class _ImagePickerCard extends StatelessWidget {
     );
   }
 }
+
+
 
