@@ -1,7 +1,7 @@
 # Blind Watermark App（盲水印）
 
 基于 DWT-DCT-SVD + WAM 的图片盲水印工具：**嵌入水印无需原图即可提取**（盲水印）。
-安卓 App（Flutter + C++ FFI），核心算法源自 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），App 内嵌入/提取自洽闭环；**与参考库的互通不再作为约束**（大图会先缩放至 1536px 内，仅保证 App 内一致）。
+安卓 App（Flutter + C++ FFI），核心算法源自 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），App 内嵌入/提取自洽闭环。
 
 ## 目录结构
 
