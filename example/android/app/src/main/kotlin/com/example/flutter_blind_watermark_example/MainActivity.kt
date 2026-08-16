@@ -37,6 +37,15 @@ class MainActivity : FlutterActivity() {
     private var pendingPickResult: MethodChannel.Result? = null
     private var wamChannel: MethodChannel? = null
     private var dartReadyFlag = false
+    private var reportShownThisProcess = false
+
+    /** Records the current ONNX step; appended to the crash report so a
+     *  native abort can be pinpointed to the exact JNI call. */
+    private fun trailStep(s: String) {
+        try {
+            File(filesDir, "trail.txt").writeText("$s\n")
+        } catch (_: Exception) {}
+    }
 
     /**
      * Captures uncaught Java/Kotlin exceptions (e.g. OOM, UnsatisfiedLinkError
@@ -103,15 +112,23 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Shows any crash report written by the previous run, then deletes it. */
+    /** Shows any crash report written by the previous run. The report files
+     *  are only deleted once the user dismisses the dialog (crashReportShown)
+     *  — so if the dialog is missed on one launch, the next launch shows it
+     *  again instead of silently dropping the report. */
     private fun showCrashReportIfAny() {
+        if (reportShownThisProcess) return
+        reportShownThisProcess = true
         try {
             val sb = StringBuilder()
             for (f in listOf(File(filesDir, "crash.txt"), File(cacheDir, "crash.txt"))) {
                 if (f.exists()) {
                     sb.append(f.readText()).append("\n")
-                    f.delete()
                 }
+            }
+            val trail = File(filesDir, "trail.txt")
+            if (trail.exists()) {
+                sb.append("LAST STEP: ").append(trail.readText()).append("\n")
             }
             if (sb.isNotEmpty()) {
                 val report = sb.toString()
@@ -143,12 +160,21 @@ class MainActivity : FlutterActivity() {
                                     cb.setPrimaryClip(ClipData.newPlainText("crash", report))
                                 }
                                 .setNegativeButton("关闭", null)
+                                .setOnDismissListener { deleteCrashReportFiles() }
                                 .show()
                         } catch (_: Exception) {}
                     }
                 }
                 handler.post(deliver)
             }
+        } catch (_: Exception) {}
+    }
+
+    private fun deleteCrashReportFiles() {
+        try {
+            File(filesDir, "crash.txt").delete()
+            File(cacheDir, "crash.txt").delete()
+            File(filesDir, "trail.txt").delete()
         } catch (_: Exception) {}
     }
 
@@ -205,6 +231,10 @@ class MainActivity : FlutterActivity() {
                                 // (set after the Flutter side is ready).
                                 "dartReady" -> {
                                     dartReadyFlag = true
+                                    result.success(null)
+                                }
+                                "crashReportShown" -> {
+                                    deleteCrashReportFiles()
                                     result.success(null)
                                 }
                                 // Pick an image and read the content URI bytes
@@ -349,19 +379,25 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun getEmbedSession(): OrtSession {
+        trailStep("session:embed")
         embedSession?.let { return it }
+        trailStep("session:embed-getEnv")
         val env = getEnv()
         val model = ensureModelFile("wam_embedder.onnx")
             ?: throw IllegalArgumentException("embedder model missing from app bundle")
+        trailStep("session:embed-create")
         embedSession = env.createSession(model.path, OrtSession.SessionOptions())
         return embedSession!!
     }
 
     private fun getExtractSession(): OrtSession {
+        trailStep("session:extract")
         extractSession?.let { return it }
+        trailStep("session:extract-getEnv")
         val env = getEnv()
         val model = ensureModelFile("wam_extractor_int8.onnx")
             ?: throw IllegalArgumentException("extractor model missing from app bundle")
+        trailStep("session:extract-create")
         extractSession = env.createSession(model.path, OrtSession.SessionOptions())
         return extractSession!!
     }
@@ -436,19 +472,27 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun embed(imgBytes: ByteArray, bits: List<Double>): ByteArray {
+        trailStep("embed:decode")
         val bmp = decodeBitmap(imgBytes, IMG_SIZE)
+        trailStep("embed:toTensor")
         val tensor = toTensor(bmp)
+        trailStep("embed:getEnv")
         val env = getEnv()
+        trailStep("embed:getSession")
         val sess = getEmbedSession()
         val msg = FloatArray(32) { if (bits.getOrElse(it) { 0.0 } > 0.5) 1f else 0f }
         var imgTensor: OnnxTensor? = null
         var msgTensor: OnnxTensor? = null
         var out: OrtSession.Result? = null
         try {
+            trailStep("embed:createTensor-img")
             imgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(tensor),
                 longArrayOf(1, 3, IMG_SIZE.toLong(), IMG_SIZE.toLong()))
+            trailStep("embed:createTensor-msg")
             msgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(msg), longArrayOf(1, 32))
+            trailStep("embed:run")
             out = sess.run(mapOf("img" to imgTensor, "msg" to msgTensor))
+            trailStep("embed:output")
             val flat = flattenFloats(out.get(0).value)
             // flat is [1,3,256,256] in C order -> channels are contiguous blocks
             val hw = IMG_SIZE * IMG_SIZE
@@ -456,9 +500,11 @@ class MainActivity : FlutterActivity() {
             System.arraycopy(flat, 0, wm, 0, hw)
             System.arraycopy(flat, hw, wm, hw, hw)
             System.arraycopy(flat, 2 * hw, wm, 2 * hw, hw)
+            trailStep("embed:fromTensor")
             val outBmp = fromTensor(wm)
             val bos = ByteArrayOutputStream()
             outBmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
+            trailStep("embed:done")
             return bos.toByteArray()
         } finally {
             imgTensor?.close()
@@ -468,16 +514,23 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun extract(imgBytes: ByteArray): List<Int> {
+        trailStep("extract:decode")
         val bmp = decodeBitmap(imgBytes, IMG_SIZE)
+        trailStep("extract:toTensor")
         val tensor = toTensor(bmp)
+        trailStep("extract:getEnv")
         val env = getEnv()
+        trailStep("extract:getSession")
         val sess = getExtractSession()
         var imgTensor: OnnxTensor? = null
         var out: OrtSession.Result? = null
         try {
+            trailStep("extract:createTensor")
             imgTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(tensor),
                 longArrayOf(1, 3, IMG_SIZE.toLong(), IMG_SIZE.toLong()))
+            trailStep("extract:run")
             out = sess.run(mapOf("img" to imgTensor))
+            trailStep("extract:output")
             val flat = flattenFloats(out.get(0).value)
             // flat is [1,33,256,256] C order: channel k occupies [k*hw, (k+1)*hw)
             val hw = IMG_SIZE * IMG_SIZE
@@ -502,6 +555,7 @@ class MainActivity : FlutterActivity() {
                 }
                 result.add(if (n > 0 && sum / n > 0.0) 1 else 0)
             }
+            trailStep("extract:done")
             return result
         } finally {
             imgTensor?.close()

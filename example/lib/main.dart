@@ -87,6 +87,11 @@ Future<void> _showCrashReport(String report) async {
       ],
     ),
   );
+  // The report files are deleted only now (dialog dismissed) — a missed
+  // dialog on one launch still shows on the next one.
+  try {
+    await const MethodChannel('wam').invokeMethod('crashReportShown');
+  } catch (_) {}
 }
 
 class BlindWatermarkApp extends StatelessWidget {
