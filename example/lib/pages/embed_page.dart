@@ -72,8 +72,12 @@ class _EmbedPageState extends State<EmbedPage> {
     final file = result.files.first;
     final raw = file.bytes;
     if (raw == null) return;
-    final png = await decodeToPng(raw);
-    if (png == null) {
+    // Decode with an engine-side scaled decode: camera photos (12-108MP)
+    // never materialize at full resolution in app memory — that alone could
+    // get the process killed before embedding even starts. Images at or
+    // below 2048px are kept unchanged.
+    final scaled = await decodeToPngScaled(raw);
+    if (scaled == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('无法读取该图片格式')));
@@ -81,7 +85,7 @@ class _EmbedPageState extends State<EmbedPage> {
       return;
     }
     setState(() {
-      _imageBytes = png;
+      _imageBytes = scaled.$1;
       _imageName = file.name;
       _resultBytes = null;
       _wmBitLength = null;
@@ -599,7 +603,7 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.1',
+              '盲水印 v1.1.2',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,

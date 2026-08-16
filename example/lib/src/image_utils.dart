@@ -7,15 +7,87 @@ import 'dart:ui' as ui;
 /// not HEIC/AVIF etc. Re-encoding through the Flutter engine makes the input
 /// format-agnostic and lossless (PNG), which is safe for blind watermarking.
 Future<Uint8List?> decodeToPng(Uint8List bytes) async {
+  final r = await decodeToPngScaled(bytes, maxDim: 0x7FFFFFFF);
+  return r?.$1;
+}
+
+/// Decodes any image bytes and re-encodes to PNG, downscaling so the long
+/// edge is <= [maxDim] (never upscales).
+///
+/// Returns `(pngBytes, originalWidth, originalHeight)` or null on failure.
+///
+/// Downscaling happens at decode time (engine-side scaled decode), so a
+/// 12-108MP camera photo never materializes as a full-resolution frame or a
+/// multi-tens-of-MB PNG in app memory — both would otherwise push the process
+/// past the phone's memory budget and get it killed (the original crash).
+Future<(Uint8List, int, int)?> decodeToPngScaled(Uint8List bytes,
+    {int maxDim = 2048}) async {
+  // Read the intrinsic size cheaply (header parse). If the descriptor path
+  // is unavailable for this format, fall back to a plain full decode.
+  int? w;
+  int? h;
   try {
-    final codec = await ui.instantiateImageCodec(bytes);
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    try {
+      final descriptor = await ui.ImageDescriptor.encoded(buffer);
+      try {
+        w = descriptor.width;
+        h = descriptor.height;
+      } finally {
+        descriptor.dispose();
+      }
+    } finally {
+      buffer.dispose();
+    }
+  } catch (_) {
+    w = null;
+    h = null;
+  }
+
+  Future<(Uint8List, int, int)?> plainDecode() async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      try {
+        final frame = await codec.getNextFrame();
+        final image = frame.image;
+        try {
+          final data =
+              await image.toByteData(format: ui.ImageByteFormat.png);
+          if (data == null) return null;
+          return (data.buffer.asUint8List(), image.width, image.height);
+        } finally {
+          image.dispose();
+        }
+      } finally {
+        codec.dispose();
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  if (w == null || h == null || w <= 0 || h <= 0) {
+    return plainDecode();
+  }
+  final longEdge = w > h ? w : h;
+  if (longEdge <= maxDim) {
+    return plainDecode();
+  }
+  try {
+    final codec = await ui.instantiateImageCodec(
+      bytes,
+      targetWidth: (w * maxDim / longEdge).round(),
+      targetHeight: (h * maxDim / longEdge).round(),
+    );
     try {
       final frame = await codec.getNextFrame();
       final image = frame.image;
       try {
         final data = await image.toByteData(format: ui.ImageByteFormat.png);
         if (data == null) return null;
-        return data.buffer.asUint8List();
+        // Original dimensions, so callers can distinguish "downscaled" from
+        // "unchanged" (e.g. the DWT extraction size guard).
+        return (data.buffer.asUint8List(), w, h);
       } finally {
         image.dispose();
       }

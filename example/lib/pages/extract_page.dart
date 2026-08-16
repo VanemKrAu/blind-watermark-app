@@ -28,6 +28,11 @@ class _ExtractPageState extends State<ExtractPage> {
   Uint8List? _imageBytes;
   String? _imageName;
 
+  /// Long edge of the image as picked (before any decode-time downscale).
+  /// DWT extraction must run on the exact watermarked size; oversized picks
+  /// are skipped with a message instead of being processed at a wrong size.
+  int _origLongEdge = 0;
+
   bool _processing = false;
   String? _error;
   String? _statusText;
@@ -53,17 +58,22 @@ class _ExtractPageState extends State<ExtractPage> {
     final file = result.files.first;
     final raw = file.bytes;
     if (raw == null) return;
-    final png = await decodeToPng(raw);
-    if (png == null) {
+    // Engine-side scaled decode: never hold a full-resolution camera photo
+    // in memory; the WAM path downsizes internally anyway and oversized DWT
+    // picks are skipped via the recorded original size.
+    final scaled = await decodeToPngScaled(raw);
+    if (scaled == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('无法读取该图片格式')));
       }
       return;
     }
+    final origLongEdge = scaled.$2 > scaled.$3 ? scaled.$2 : scaled.$3;
     setState(() {
-      _imageBytes = png;
+      _imageBytes = scaled.$1;
       _imageName = file.name;
+      _origLongEdge = origLongEdge;
       _error = null;
       _statusText = null;
       _resultText = null;
@@ -131,14 +141,8 @@ class _ExtractPageState extends State<ExtractPage> {
       // skipping oversized picks is safe.
       final hasDwtRecs =
           history.any((e) => e.kind == 'text' || e.kind == 'logo');
-      if (!found && hasDwtRecs) {
-        final size = await imageSize(bytes);
-        final longEdge = size == null
-            ? 0
-            : (size.$1 > size.$2 ? size.$1 : size.$2);
-        if (longEdge > _dwtMaxLongEdge) {
-          dwtSkippedBig = true;
-        }
+      if (!found && hasDwtRecs && _origLongEdge > _dwtMaxLongEdge) {
+        dwtSkippedBig = true;
       }
 
       // 2) DWT text: try the most recent text records (skip if none).
@@ -495,7 +499,7 @@ class _ExtractPageState extends State<ExtractPage> {
             ),
             const SizedBox(height: 24),
             Text(
-              '盲水印 v1.1.1',
+              '盲水印 v1.1.2',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colorScheme.outline,
