@@ -51,16 +51,16 @@ uintptr_t crash_parse_hex(const char* a, const char* b) {
     return v;
 }
 
-// Finds the map range containing addr; fills *start (map base), *isExec
+// Finds the map range containing addr; fills *start, *end, *isExec
 // (perms contain 'x') and the pathname. Returns false when not found.
 bool crash_lookup_map(uintptr_t addr, const char* maps, size_t len,
-                      uintptr_t* start, bool* isExec,
+                      uintptr_t* start, uintptr_t* end, bool* isExec,
                       char* out, size_t outlen) {
     const char* p = maps;
-    const char* end = maps + len;
-    while (p < end) {
-        const char* nl = static_cast<const char*>(memchr(p, '\n', end - p));
-        if (!nl) nl = end;
+    const char* endp = maps + len;
+    while (p < endp) {
+        const char* nl = static_cast<const char*>(memchr(p, '\n', endp - p));
+        if (!nl) nl = endp;
         const char* dash = static_cast<const char*>(memchr(p, '-', nl - p));
         if (dash && dash > p) {
             uintptr_t s = crash_parse_hex(p, dash);
@@ -70,6 +70,7 @@ bool crash_lookup_map(uintptr_t addr, const char* maps, size_t len,
             uintptr_t e = crash_parse_hex(e1, e2);
             if (addr >= s && addr < e) {
                 if (start) *start = s;
+                if (end) *end = e;
                 bool exec = false;
                 int spaces = 0;
                 const char* path = nullptr;
@@ -105,10 +106,11 @@ void crash_write_addr(int fd, char* buf, size_t buflen, uintptr_t addr,
                       const char* maps, size_t mapslen) {
     if (addr == 0) return;
     char mod[256];
-    uintptr_t base = 0;
+    uintptr_t base = 0, end = 0;
     bool exec = false;
     int n;
-    if (crash_lookup_map(addr, maps, mapslen, &base, &exec, mod, sizeof(mod))) {
+    if (crash_lookup_map(addr, maps, mapslen, &base, &end, &exec, mod,
+                         sizeof(mod))) {
         n = snprintf(buf, buflen, "  %s 0x%llx in %s+0x%llx\n",
                      exec ? "X" : " ",
                      static_cast<unsigned long long>(addr), mod,
@@ -191,8 +193,10 @@ void crash_handler(int sig, siginfo_t* si, void* uc) {
             }
 #endif
 
-            // Module map (parsed once, reused for every address).
-            char maps[98304];
+            // Module map (parsed once, reused for every address). 192KB is
+            // enough for the whole file on normal apps (a truncated map made
+            // the high-address system libs unresolvable on Xiaomi).
+            char maps[196608];
             size_t mapslen = 0;
             {
                 int mfd = open("/proc/self/maps", O_RDONLY);
@@ -213,11 +217,29 @@ void crash_handler(int sig, siginfo_t* si, void* uc) {
             write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
             crash_write_addr(fd, buf, sizeof(buf), lr, maps, mapslen);
 
+            // Bound every stack read to the mapped stack region: a read past
+            // the stack mapping would fault and, with the signal masked,
+            // spin the thread forever on the faulting instruction.
+            uintptr_t stack_start = 0, stack_end = 0;
+            {
+                uintptr_t s = 0, e = 0;
+                bool exec = false;
+                char mod[256];
+                if (crash_lookup_map(sp, maps, mapslen, &s, &e, &exec, mod,
+                                     sizeof(mod))) {
+                    stack_start = s;
+                    stack_end = e;
+                }
+            }
+
             // Call chain: frame-pointer walk first...
             uintptr_t chain[64];
             int nchain = 0;
             uintptr_t f = fp;
-            for (int i = 0; i < 64 && f > 0x10000; ++i) {
+            for (int i = 0;
+                 i < 64 && f > 0x10000 && stack_end > stack_start &&
+                 f + 16 >= f && f + 16 < stack_end;
+                 ++i) {
                 uintptr_t saved_lr = *reinterpret_cast<const uintptr_t*>(f + 8);
                 uintptr_t saved_fp = *reinterpret_cast<const uintptr_t*>(f);
                 if (nchain < 64) chain[nchain++] = saved_lr;
@@ -225,23 +247,28 @@ void crash_handler(int sig, siginfo_t* si, void* uc) {
                 f = saved_fp;
             }
             // ...then a stack scan for return addresses in executable maps
-            // (covers code compiled without frame pointers). Faulting reads
-            // leave the destination unchanged, so garbage terminates safely.
-            for (uintptr_t a = sp; a < sp + 0x10000 && nchain < 64; a += 8) {
-                uintptr_t w = *reinterpret_cast<const uintptr_t*>(a);
-                if (w < 0x10000 || w > 0x0000ffffffffffffULL) continue;
-                uintptr_t base = 0;
-                bool exec = false;
-                char mod[256];
-                if (!crash_lookup_map(w, maps, mapslen, &base, &exec, mod,
-                                      sizeof(mod)) || !exec) {
-                    continue;
+            // (covers code compiled without frame pointers). Only reads
+            // within the mapped stack region.
+            if (stack_end > stack_start) {
+                uintptr_t scan_end = sp + 0x10000;
+                if (scan_end > stack_end) scan_end = stack_end;
+                for (uintptr_t a = sp; a + 8 <= scan_end && nchain < 64;
+                     a += 8) {
+                    uintptr_t w = *reinterpret_cast<const uintptr_t*>(a);
+                    if (w < 0x10000 || w > 0x0000ffffffffffffULL) continue;
+                    uintptr_t base = 0, e2 = 0;
+                    bool exec = false;
+                    char mod[256];
+                    if (!crash_lookup_map(w, maps, mapslen, &base, &e2, &exec,
+                                          mod, sizeof(mod)) || !exec) {
+                        continue;
+                    }
+                    bool dup = false;
+                    for (int i = 0; i < nchain; ++i) {
+                        if (chain[i] == w) { dup = true; break; }
+                    }
+                    if (!dup) chain[nchain++] = w;
                 }
-                bool dup = false;
-                for (int i = 0; i < nchain; ++i) {
-                    if (chain[i] == w) { dup = true; break; }
-                }
-                if (!dup) chain[nchain++] = w;
             }
             n = snprintf(buf, sizeof(buf), "FRAMES=%d\n", nchain);
             write(fd, buf, static_cast<size_t>(n > 0 ? n : 0));
