@@ -26,6 +26,12 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Defensive: mark the app cache dir so ROM galleries never index any
+        // transient file that ends up there.
+        try {
+            val nomedia = java.io.File(cacheDir, ".nomedia")
+            if (!nomedia.exists()) nomedia.createNewFile()
+        } catch (_: Exception) {}
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 // Heavy ONNX inference must never run on the platform (UI)
@@ -68,12 +74,12 @@ class MainActivity : FlutterActivity() {
         return env
     }
 
-    /** Model files: prefer the downloaded copy in filesDir, fall back to assets. */
+    /** Model files are bundled in Flutter assets. Flutter packages assets
+     *  under assets/flutter_assets/<declared path>, so the native lookup must
+     *  use the full path. */
     private fun modelBytes(name: String): ByteArray? {
-        val file = java.io.File(filesDir, "onnx/$name")
-        if (file.exists()) return file.readBytes()
         return try {
-            assets.open("onnx/$name").readBytes()
+            assets.open("flutter_assets/assets/onnx/$name").readBytes()
         } catch (e: Exception) {
             null
         }

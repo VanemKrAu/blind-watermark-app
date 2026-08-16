@@ -51,24 +51,18 @@ class _EmbedPageState extends State<EmbedPage> {
   }
 
   Future<void> _pickImage() async {
+    // withData: read straight into memory. file_picker would otherwise copy
+    // the photo into the app cache dir, which some ROM galleries index and
+    // show in the album out of nowhere.
     final result = await FilePicker.platform.pickFiles(
       type: FileType.image,
       allowMultiple: false,
+      withData: true,
     );
     if (result == null || result.files.isEmpty) return;
     final file = result.files.first;
-    final path = file.path;
-    final raw = path != null ? await File(path).readAsBytes() : file.bytes;
+    final raw = file.bytes;
     if (raw == null) return;
-    // file_picker copies the picked photo into the app cache dir; some ROM
-    // galleries index that directory, so photos appear in the gallery out
-    // of nowhere. Delete the cache copy right away.
-    if (path != null) {
-      try {
-        final f = File(path);
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
-    }
     final png = await decodeToPng(raw);
     if (png == null) {
       if (mounted) {
@@ -92,20 +86,13 @@ class _EmbedPageState extends State<EmbedPage> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.image,
       allowMultiple: false,
+      withData: true,
     );
     if (result == null || result.files.isEmpty) return;
     final file = result.files.first;
-    final path = file.path;
-    final bytes = path != null ? await File(path).readAsBytes() : file.bytes;
+    final bytes = file.bytes;
     if (bytes == null) return;
-    if (path != null) {
-      try {
-        final f = File(path);
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
-    }
     setState(() {
-
       _logoBytes = bytes;
       _logoName = file.name;
       _resultBytes = null;
@@ -215,7 +202,7 @@ class _EmbedPageState extends State<EmbedPage> {
           final ready = await ensureWamModels(context);
           if (!ready) {
             if (mounted) {
-              setState(() => _error = '强鲁棒模式需要下载模型后才能使用');
+              setState(() => _error = '强鲁棒模式模型不可用（安装包可能不完整）');
             }
             return;
           }
@@ -670,6 +657,7 @@ class _ImagePickerCard extends StatelessWidget {
     );
   }
 }
+
 
 
 

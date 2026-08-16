@@ -37,22 +37,17 @@ class _ExtractPageState extends State<ExtractPage> {
   }
 
   Future<void> _pickImage() async {
+    // withData: read straight into memory — no cache copy that ROM galleries
+    // might pick up.
     final result = await FilePicker.platform.pickFiles(
       type: FileType.image,
       allowMultiple: false,
+      withData: true,
     );
     if (result == null || result.files.isEmpty) return;
     final file = result.files.first;
-    final path = file.path;
-    final raw = path != null ? await File(path).readAsBytes() : file.bytes;
+    final raw = file.bytes;
     if (raw == null) return;
-    // Delete the file_picker cache copy (some ROM galleries index it).
-    if (path != null) {
-      try {
-        final f = File(path);
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
-    }
     final png = await decodeToPng(raw);
     if (png == null) {
       if (mounted) {
@@ -101,7 +96,7 @@ class _ExtractPageState extends State<ExtractPage> {
         final ready = await ensureWamModels(context);
         if (!ready) {
           if (mounted) {
-            setState(() => _error = '强鲁棒模式需要下载模型后才能使用');
+            setState(() => _error = '强鲁棒模式模型不可用（安装包可能不完整）');
           }
           return;
         }
@@ -512,5 +507,6 @@ Uint8List? _extractLogoIsolate((Uint8List, int, int, int) args) {
     bwm.dispose();
   }
 }
+
 
 
