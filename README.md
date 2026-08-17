@@ -1,5 +1,9 @@
 # Blind Watermark App（盲水印）
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/VanemKrAu/blind-watermark-app/main/docs/icon.svg" width="256" height="256" alt="盲水印" />
+</p>
+
 基于 DWT-DCT-SVD + WAM 的图片盲水印工具：**嵌入水印无需原图即可提取**（盲水印）。
 安卓 App（Flutter + C++ FFI），核心算法源自 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT），App 内嵌入/提取自洽闭环。
 
