@@ -49,6 +49,8 @@ class WmRecord {
   final int pw; // DWT seed derived from the user password
   final int ts; // embed time (ms since epoch); 0 = legacy record (unknown)
   final int seq; // 单调递增序号：排序决胜键（等 ts 时按 seq 倒序，保证确定性）
+  final int cw; // 载体（水印图）宽度：提取时用于「还原回原尺寸」再同步网格
+  final int ch; // 载体（水印图）高度：提取时用于「还原回原尺寸」再同步网格
   final bool pinned; // pinned to the top of the records list
   final bool archived; // hidden from the main list; not used in matching
 
@@ -62,6 +64,8 @@ class WmRecord {
     this.pw = 1,
     this.ts = 0,
     this.seq = 0,
+    this.cw = 0,
+    this.ch = 0,
     this.pinned = false,
     this.archived = false,
   });
@@ -76,6 +80,8 @@ class WmRecord {
         'pw': pw,
         if (ts != 0) 'ts': ts,
         if (seq != 0) 'seq': seq,
+        if (cw != 0) 'cw': cw,
+        if (ch != 0) 'ch': ch,
         if (pinned) 'pinned': true,
         if (archived) 'archived': true,
       };
@@ -90,6 +96,8 @@ class WmRecord {
         pw: e['pw'] as int? ?? 1,
         ts: e['ts'] as int? ?? 0,
         seq: e['seq'] as int? ?? 0,
+        cw: e['cw'] as int? ?? 0,
+        ch: e['ch'] as int? ?? 0,
         pinned: e['pinned'] as bool? ?? false,
         archived: e['archived'] as bool? ?? false,
       );
@@ -105,6 +113,8 @@ class WmRecord {
         pw: pw,
         ts: ts ?? this.ts,
         seq: seq ?? this.seq,
+        cw: cw,
+        ch: ch,
         pinned: pinned ?? this.pinned,
         archived: archived ?? this.archived,
       );
@@ -224,6 +234,8 @@ class WmHistory {
           ts: now,
           // 撤销删除等恢复场景沿用原 seq（保持原排序位置）；新记录分配递增 seq。
           seq: rec.seq != 0 ? rec.seq : maxSeq + 1,
+          cw: rec.cw,
+          ch: rec.ch,
           pinned: rec.pinned || existingPinned,
           archived: rec.archived || existingArchived,
         ));

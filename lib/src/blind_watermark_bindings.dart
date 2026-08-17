@@ -82,6 +82,11 @@ typedef _bwm_extract_bits_buffer_native = Int32 Function(
 typedef _bwm_extract_bits_buffer_dart = int Function(
     BWMHandle handle, Pointer<Uint8> data, int length, int wm_length, Pointer<Pointer<Uint8>> out_bits);
 
+typedef _bwm_extract_raw_deviation_native = Int32 Function(
+    BWMHandle handle, Pointer<Uint8> data, Size length, Size wm_length, Pointer<Float> out_deviation);
+typedef _bwm_extract_raw_deviation_dart = int Function(
+    BWMHandle handle, Pointer<Uint8> data, int length, int wm_length, Pointer<Float> out_deviation);
+
 typedef _bwm_get_watermark_size_native = Size Function(BWMHandle handle);
 typedef _bwm_get_watermark_size_dart = int Function(BWMHandle handle);
 
@@ -142,6 +147,7 @@ class BlindWatermarkBindings {
   late final _bwm_extract_image_buffer_dart bwm_extract_image_buffer;
   late final _bwm_extract_bits_dart bwm_extract_bits;
   late final _bwm_extract_bits_buffer_dart bwm_extract_bits_buffer;
+  late final _bwm_extract_raw_deviation_dart bwm_extract_raw_deviation;
   late final _bwm_get_watermark_size_dart bwm_get_watermark_size;
   late final _bwm_free_buffer_dart bwm_free_buffer;
   late final _bwm_free_string_dart bwm_free_string;
@@ -179,6 +185,9 @@ class BlindWatermarkBindings {
     bwm_extract_bits = _lib.lookupFunction<_bwm_extract_bits_native, _bwm_extract_bits_dart>('bwm_extract_bits');
     bwm_extract_bits_buffer =
         _lib.lookupFunction<_bwm_extract_bits_buffer_native, _bwm_extract_bits_buffer_dart>('bwm_extract_bits_buffer');
+    bwm_extract_raw_deviation = _lib
+        .lookupFunction<_bwm_extract_raw_deviation_native, _bwm_extract_raw_deviation_dart>(
+            'bwm_extract_raw_deviation');
     bwm_get_watermark_size =
         _lib.lookupFunction<_bwm_get_watermark_size_native, _bwm_get_watermark_size_dart>('bwm_get_watermark_size');
     bwm_free_buffer = _lib.lookupFunction<_bwm_free_buffer_native, _bwm_free_buffer_dart>('bwm_free_buffer');

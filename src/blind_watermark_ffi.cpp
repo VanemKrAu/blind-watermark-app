@@ -1,6 +1,7 @@
 #include "watermark_core.hpp"
 #include "image_io.hpp"
 #include <csignal>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -703,6 +704,35 @@ BWM_EXPORT size_t bwm_get_watermark_size(void* handle) {
 
     auto* data = static_cast<BWMHandleData*>(handle);
     return data->core->getWatermarkSize();
+}
+
+// 提取 DWT 原始位值（二值化前）相对 0.5 的平均偏离度 mean|avg-0.5|。
+// 用于 Logo 提取「网格再同步」候选的择优：正确的还原候选信号对齐、偏离大，
+// 错误候选网格错位、偏离小（实测 0.31 vs 0.24）。
+BWM_EXPORT int bwm_extract_raw_deviation(void* handle, const uint8_t* buffer, size_t length,
+                                         size_t wm_length, float* out_deviation) {
+    if (!handle || !buffer || length == 0 || !out_deviation || wm_length == 0) {
+        return BWM_ERROR_INVALID_PARAMS;
+    }
+
+    auto* data = static_cast<BWMHandleData*>(handle);
+
+    try {
+        bwm::Image img;
+        if (!bwm::loadImageFromMemory(buffer, length, img)) {
+            data->lastError = "Failed to decode image from buffer";
+            return BWM_ERROR_INVALID_IMAGE;
+        }
+
+        std::vector<double> avg = data->core->extractRaw(img, wm_length);
+        double sum = 0.0;
+        for (double v : avg) sum += std::fabs(v - 0.5);
+        *out_deviation = static_cast<float>(sum / avg.size());
+        return BWM_OK;
+    } catch (const std::exception& e) {
+        data->lastError = e.what();
+        return BWM_ERROR_EXTRACT_FAILED;
+    }
 }
 
 BWM_EXPORT void bwm_free_buffer(void* buffer) {

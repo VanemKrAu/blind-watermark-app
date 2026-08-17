@@ -1,10 +1,13 @@
+import 'dart:ffi';
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blind_watermark/flutter_blind_watermark.dart';
+import 'package:flutter_blind_watermark/src/blind_watermark_bindings.dart';
 import 'package:gal/gal.dart';
 
 import '../src/app_version.dart';
@@ -158,6 +161,8 @@ class _ExtractPageState extends State<ExtractPage> {
 
     try {
       final bytes = _imageBytes!;
+      // 图片尺寸缓存：供还原候选生成复用（避免每个记录重复解码）。
+      final bytesSize = await imageSize(bytes);
       final history = await WmHistory.active();
       var found = false;
       var wamUnavailable = false;
@@ -276,6 +281,8 @@ class _ExtractPageState extends State<ExtractPage> {
       }
 
       // 2) DWT text: try the most recent text records (skip if none).
+      // 每个记录按记录中的载体尺寸生成「网格再同步」候选（原图/拉伸/填充），
+      // 对齐参考库攻击演示的还原步骤——缩放/裁剪后的图可救回。
       if (!found &&
           !dwtSkippedBig &&
           history.any((e) => e.kind == 'text')) {
@@ -284,24 +291,35 @@ class _ExtractPageState extends State<ExtractPage> {
         for (final rec in textRecs) {
           final len = rec.len;
           if (len == null || len <= 0) continue;
-          final result = await compute(
-            _extractTextIsolate,
-            (bytes, len, rec.pw),
-          );
-          if (result != null && result.isNotEmpty) {
-            found = true;
-            if (mounted) {
-              setState(() {
-                _resultText = result;
-                _resultNote = '文本水印 · 自动匹配长度 $len';
-              });
+          final candidates = await resyncCandidates(bytes, rec.cw, rec.ch,
+              srcW: bytesSize?.$1, srcH: bytesSize?.$2);
+          for (final cand in candidates) {
+            final result = await compute(
+              _extractTextIsolate,
+              (cand, len, rec.pw),
+            );
+            if (result != null && result.isNotEmpty) {
+              found = true;
+              if (mounted) {
+                setState(() {
+                  _resultText = result;
+                  _resultNote = candidates.length > 1
+                      ? '文本水印 · 自动匹配长度 $len（已还原尺寸 ${rec.cw}x${rec.ch}）'
+                      : '文本水印 · 自动匹配长度 $len';
+                });
+              }
+              break;
             }
-            break;
           }
+          if (found) break;
         }
       }
 
       // 3) DWT logo: try the most recent logo records (skip if none).
+      // 同样尝试还原候选，并用「raw 位值相对 0.5 的偏离度」择优：
+      // 正确还原候选信号对齐、偏离大，错误候选网格错位、偏离小。
+      // （绝对真假判定不可靠——错误密码/长度提取同样呈混合图案，故只做
+      // 候选相对择优，最终展示由用户目视确认，与参考库演示一致。）
       if (!found &&
           !dwtSkippedBig &&
           history.any((e) => e.kind == 'logo')) {
@@ -311,16 +329,34 @@ class _ExtractPageState extends State<ExtractPage> {
           final w = rec.w;
           final h = rec.h;
           if (w == null || h == null || w <= 0 || h <= 0) continue;
-          final result = await compute(
-            _extractLogoIsolate,
-            (bytes, w, h, rec.pw),
-          );
-          if (result != null) {
+          final candidates = await resyncCandidates(bytes, rec.cw, rec.ch,
+              srcW: bytesSize?.$1, srcH: bytesSize?.$2);
+          Uint8List? bestResult;
+          var bestDev = 0.0;
+          var restored = false;
+          for (var ci = 0; ci < candidates.length; ci++) {
+            final cand = candidates[ci];
+            final result = await compute(
+              _extractLogoIsolate,
+              (cand, w, h, rec.pw),
+            );
+            if (result == null) continue;
+            final dev = await compute(
+                _dwtRawDevIsolate, (cand, w * h, rec.pw));
+            if (dev > bestDev) {
+              bestDev = dev;
+              bestResult = result;
+              restored = ci > 0;
+            }
+          }
+          if (bestResult != null) {
             found = true;
             if (mounted) {
               setState(() {
-                _resultImage = result;
-                _resultNote = 'Logo 水印 · 自动匹配尺寸 ${w}x$h';
+                _resultImage = bestResult;
+                _resultNote = restored
+                    ? 'Logo 水印 · 自动匹配尺寸 ${w}x$h（已还原尺寸 ${rec.cw}x${rec.ch}）'
+                    : 'Logo 水印 · 自动匹配尺寸 ${w}x$h';
               });
             }
             break;
@@ -815,6 +851,32 @@ Uint8List? _extractLogoIsolate((Uint8List, int, int, int) args) {
     return null;
   } finally {
     bwm.dispose();
+  }
+}
+
+/// DWT 原始位值（二值化前）相对 0.5 的平均偏离度 mean|avg-0.5|。
+/// 用于 Logo「网格再同步」候选的择优：正确还原候选信号对齐、偏离大，
+/// 错误候选网格错位、偏离小（实测 0.31 vs 0.24）。
+double _dwtRawDevIsolate((Uint8List, int, int) args) {
+  final (bytes, wmLength, pw) = args;
+  final b = BlindWatermarkBindings.instance;
+  final handle = b.bwm_create(pw, pw);
+  if (handle.address == 0) return 0;
+  try {
+    final pngPtr = malloc<Uint8>(bytes.length);
+    final dev = malloc<Float>();
+    try {
+      pngPtr.asTypedList(bytes.length).setAll(0, bytes);
+      final rc = b.bwm_extract_raw_deviation(
+          handle, pngPtr, bytes.length, wmLength, dev);
+      if (rc != 0) return 0;
+      return dev.value.toDouble();
+    } finally {
+      malloc.free(pngPtr);
+      malloc.free(dev);
+    }
+  } finally {
+    b.bwm_destroy(handle);
   }
 }
 

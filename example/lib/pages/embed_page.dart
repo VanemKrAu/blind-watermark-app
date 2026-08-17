@@ -207,6 +207,8 @@ class _EmbedPageState extends State<EmbedPage> {
             w: logoSize.$1,
             h: logoSize.$2,
             pw: pwWm,
+            cw: cw,
+            ch: ch,
           ));
           if (mounted) {
             setState(() {
@@ -236,11 +238,15 @@ class _EmbedPageState extends State<EmbedPage> {
           final code = WamCodec.bitsToStr(bits);
           final result =
               await compute(wamEmbedIsolate, (bytes, bits, modelsDir));
+          // 载体尺寸（水印图尺寸）：供提取时「还原回原尺寸」再同步网格。
+          final (carrierW, carrierH) = (await imageSize(result)) ?? (0, 0);
           await WmHistory.add(WmRecord(
             kind: 'wam',
             text: text,
             code: code,
             pw: pwWm,
+            cw: carrierW,
+            ch: carrierH,
           ));
           if (mounted) {
             setState(() {

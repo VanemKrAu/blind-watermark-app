@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.20] - 2026-08-17
+
+### Added
+- **DWT 提取网格再同步**：嵌入时记录载体尺寸，提取时自动尝试「拉伸/填补回原尺寸」后再提取（对齐参考库攻击演示的还原步骤）——缩放/裁剪后的水印图（文本/Logo）显著提升可提取率
+
+### Changed
+- 记录新增载体尺寸（cw/ch），旧记录自动兼容
+
 ## [1.1.19] - 2026-08-17
 
 ### Added
