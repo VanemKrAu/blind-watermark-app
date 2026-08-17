@@ -55,9 +55,11 @@ def main():
     d = flip_y(pen.getCommands(), VIEW)
 
     # 主体 bbox：x 85..427, y 43..469（翻转后不变，中心 256,256）。
+    # 缩放以原点为中心：bbox 中心 (256,256) 缩放后到 (256*s, 256*s)，
+    # 需平移 256*(1-s) 回到画布中心 —— 注意是 256（bbox 中心），不是 512。
     h0 = 469 - 43  # 426
     s = VIEW * RATIO / h0
-    t = VIEW * (1 - s)
+    t = (VIEW / 2) * (1 - s)
 
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
