@@ -16,10 +16,9 @@ FONT = os.path.join(os.path.dirname(__file__), "..", "..", ".local", "flutter",
 OUT = os.path.join(os.path.dirname(__file__), "..", "docs", "icon.svg")
 
 GLYPH_CODEPOINT = 0xF05A2  # Icons.water_drop
-BG = "#FFFFFF"             # 启动图标白底
-DROP = "#0B57D0"           # M3 primary blue
-CORNER = 96                # 圆角半径（512 画布）
-RATIO = 0.40               # 绘制高度占比（与启动图标一致）
+BG = "#D6E3FF"             # M3 blue primaryContainer 淡蓝底
+DROP = "#0B57D0"           # M3 primary blue 水滴
+RATIO = 0.60               # 绘制高度占比（README 图标用大一点，用户要求）
 
 
 def main():
@@ -39,9 +38,13 @@ def main():
 
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
-        f'  <rect x="0" y="0" width="512" height="512" rx="{CORNER}" fill="{BG}"/>\n'
-        f'  <g transform="translate({t:.2f} {t:.2f}) scale({s:.6f})" fill="{DROP}">\n'
-        f'    <path d="{d}"/>\n'
+        f'  <rect x="0" y="0" width="512" height="512" fill="{BG}"/>\n'
+        # 垂直翻转（translate(0 512) scale(1 -1)）：Material water_drop 的
+        # 尖点在 y=469（底部），翻转后尖端朝上，符合水滴图标直觉。
+        '  <g transform="translate(0 512) scale(1 -1)">\n'
+        f'    <g transform="translate({t:.2f} {t:.2f}) scale({s:.6f})" fill="{DROP}">\n'
+        f'      <path d="{d}"/>\n'
+        '    </g>\n'
         '  </g>\n'
         '</svg>\n'
     )
