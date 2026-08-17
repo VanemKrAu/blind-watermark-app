@@ -62,15 +62,15 @@ def main():
     for dens, size in legacy.items():
         bg = Image.new("RGB", (size, size), BG)
         icon = Image.alpha_composite(bg.convert("RGBA"),
-                                     draw_glyph(size, 0.42))
+                                     draw_glyph(size, 0.35))
         save(icon, os.path.join(f"mipmap-{dens}", "ic_launcher.png"))
         save(icon, os.path.join(f"mipmap-{dens}", "ic_launcher_round.png"))
-    # 自适应前景：透明底 + 安全区内字形（66.6% 安全区，绘制高度取 40%，
-    # 用户实测小米类泪滴遮罩更小，50%/44% 均被裁切）
+    # 自适应前景：透明底 + 安全区内字形（66.6% 安全区，绘制高度取 35%，
+    # 用户实测小米类泪滴遮罩更小，40%/44% 均被裁切，缩至 35%）
     fg = {"mdpi": 108, "hdpi": 162, "xhdpi": 216,
           "xxhdpi": 324, "xxxhdpi": 432}
     for dens, size in fg.items():
-        save(draw_glyph(size, 0.40),
+        save(draw_glyph(size, 0.35),
              os.path.join(f"mipmap-{dens}", "ic_launcher_foreground.png"))
     # 背景色（自适应图标 <background> 引用）
     colors = os.path.join(RES, "values", "colors.xml")
