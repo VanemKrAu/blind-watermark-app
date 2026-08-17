@@ -60,7 +60,10 @@ class _HistoryPageState extends State<HistoryPage>
   @override
   void didUpdateWidget(HistoryPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 每次进入本 tab（active 变 true）都重新加载记录——否则显示的是
+    // App 启动时的旧数据，刚嵌入的新记录看不到（需重启才刷新）。
     if (!oldWidget.active && widget.active) {
+      _reload();
       _playEntrance();
     }
   }
@@ -326,9 +329,13 @@ class _HistoryPageState extends State<HistoryPage>
         if (!didPop && _selectionMode) _exitSelection();
       },
       child: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
+        // 下拉刷新：重新加载本机记录（含刚嵌入的）。
+        child: RefreshIndicator(
+          onRefresh: _reload,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            children: [
           // 标题行 ⇄ 多选操作栏（从顶部滑入 + 淡入）
           AnimatedSwitcher(
             duration:
@@ -419,6 +426,7 @@ class _HistoryPageState extends State<HistoryPage>
                   ),
           ),
         ],
+        ),
         ),
       ),
     );
@@ -861,9 +869,12 @@ class _ArchivedPageState extends State<_ArchivedPage>
               : null,
         ),
         body: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
+          child: RefreshIndicator(
+            onRefresh: _reload,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              children: [
             AnimatedSwitcher(
               duration:
                   reduce ? Duration.zero : const Duration(milliseconds: 220),
@@ -919,6 +930,7 @@ class _ArchivedPageState extends State<_ArchivedPage>
                   child: _buildRow(i, _records[i]),
                 ),
           ],
+        ),
         ),
         ),
       ),
