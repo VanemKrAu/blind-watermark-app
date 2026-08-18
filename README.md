@@ -1,4 +1,4 @@
-# BlindWatermark App
+<h1 align="center">BlindWatermark App</h1>
 
 <p align="center">
   <img src="docs/icon.svg" width="256" height="256" alt="BlindWatermark" />
