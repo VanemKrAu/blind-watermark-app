@@ -95,7 +95,7 @@ g++ -std=c++17 -O2 bwm_cli.cpp ../../src/{numpy_rng,watermark_core,dct,dwt,color
 
 ## 鲁棒性（实测，1024×768 测试图）
 
-| 攻击 | DWT（Logo / 经典文本） | WAM 强鲁棒（文本，任意图幅） |
+| 攻击 | DWT（Logo / 经典文本） | WAM 强鲁棒（文本） |
 |---|---|---|
 | JPEG 压缩 q50~q95 | ✅ 完美 | ✅ 完美（q70 起个别位错，靠历史匹配容忍） |
 | 高斯模糊 3 | ✅ | ✅ |
