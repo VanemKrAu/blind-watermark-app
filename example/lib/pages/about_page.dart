@@ -112,11 +112,11 @@ class AboutPage extends StatelessWidget {
                 runSpacing: 4,
                 children: [
                   Chip(label: Text('JPEG q50~95')),
-                  Chip(label: Text('高斯模糊 3/5/7')),
+                  Chip(label: Text('高斯模糊 3')),
                   Chip(label: Text('局部涂黑 10%~50%')),
                   Chip(label: Text('亮度 -20%')),
                   Chip(label: Text('缩放 50%（自动还原）')),
-                  Chip(label: Text('裁剪 75%（自动填补）')),
+                  Chip(label: Text('裁剪 75%（自动还原）')),
                 ],
               ),
               const SizedBox(height: 8),
@@ -136,7 +136,8 @@ class AboutPage extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                '注：本表为 1024×768 测试图的实测结果，实际效果随图片内容与攻击强度略有差异。',
+                '注：本表为 1024×768 测试图的实测结果，实际效果随图片内容与攻击强度略有差异。'
+                'DWT 高斯模糊 5/7 仅 Logo 可提取（文本位错 23+，信息物理损坏，业界边界）。',
                 style: TextStyle(color: cs.outline, fontSize: 11),
               ),
             ],
