@@ -235,9 +235,56 @@ Future<Uint8List?> padPngTo(Uint8List bytes, int w, int h) async {
   }
 }
 
+/// 内容**原大小**居中放到 (w, h) 画布（四周黑边，不缩放）。
+/// 用于裁剪攻击的网格再同步：裁剪图的内容像素位置基本不变（居中裁剪时
+/// 完全对齐），放回原画布后 DWT 块网格即恢复对齐——实测裁剪 75% 场景
+/// 0 bit 错（拉伸/等比缩放会把内容移动错位，106 bit 错）。
+Future<Uint8List?> placePngCentered(Uint8List bytes, int w, int h) async {
+  try {
+    final codec = await ui.instantiateImageCodec(bytes);
+    try {
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      try {
+        final iw = image.width;
+        final ih = image.height;
+        if (iw >= w && ih >= h) return null; // 不小于画布：无需放置
+        final dx = (w - iw) ~/ 2;
+        final dy = (h - ih) ~/ 2;
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawRect(
+            ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+            ui.Paint()..color = const ui.Color(0xFF000000));
+        canvas.drawImage(
+          image,
+          ui.Offset(dx.toDouble(), dy.toDouble()),
+          ui.Paint()..filterQuality = ui.FilterQuality.medium,
+        );
+        final picture = recorder.endRecording();
+        final out = await picture.toImage(w, h);
+        try {
+          final data = await out.toByteData(format: ui.ImageByteFormat.png);
+          return data?.buffer.asUint8List();
+        } finally {
+          out.dispose();
+        }
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
 /// DWT「网格再同步」候选集（参考库攻击演示的还原/填补步骤）：
-/// [原图, 直接拉伸到记录尺寸, 居中填充到记录尺寸]。
+/// [原图, 直接拉伸到记录尺寸, 等比缩放居中填充, 内容原大小居中放回]。
 /// 尺寸与记录一致或 [cw]/[ch] 未知时只返回原图。
+/// 裁剪攻击用「原大小放回」恢复网格（实测 0 错），缩放攻击用「拉伸」，
+/// 加边框/缩放组合用「等比填充」——四种覆盖参考库攻击演示的全部还原方式。
 /// [srcW]/[srcH] 可传入已知的原图尺寸（避免重复解码），缺省时内部探测。
 Future<List<Uint8List>> resyncCandidates(Uint8List bytes, int cw, int ch,
     {int? srcW, int? srcH}) async {
@@ -254,10 +301,12 @@ Future<List<Uint8List>> resyncCandidates(Uint8List bytes, int cw, int ch,
   if (w == cw && h == ch) return [bytes];
   final stretched = await resizePngTo(bytes, cw, ch);
   final padded = await padPngTo(bytes, cw, ch);
+  final placed = await placePngCentered(bytes, cw, ch);
   return [
     bytes,
     if (stretched != null) stretched,
     if (padded != null) padded,
+    if (placed != null) placed,
   ];
 }
 

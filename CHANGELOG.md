@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.35] - 2026-08-18
+
+### Changed
+- **提取鲁棒性实测矩阵**（16 项攻击 bit 级实测）：JPEG q50~q95 / 涂黑 / 亮度 / 缩放全部 0~1 bit 错（容错 2 全覆盖）；WAM 实测旋转 5° 2 bit 错（matchWam 容错 4 内正常匹配）
+- **修复裁剪攻击 resync 方法错误**：原「拉伸/等比缩放」还原会让裁剪图网格错位（实测 106 bit 错）→ 新增「内容原大小放回原画布」（`placePngCentered`，实测 0 bit 错），还原候选集 3 → 4
+- README 鲁棒性表按实测修正：高斯模糊 5/7 分列（Logo ✅ / 文本 ❌ 位错 23+ 物理损坏）
+
+## [1.1.34] - 2026-08-18
+
+### Changed
+- **自动提取文本校验重构为「记录原文校验」**（`recBitsMatch`，数学严格）：以记录里嵌入时的原文编码为基准比对提取 bit，容错 ≤2 位（JPEG q70 实测 1 bit 错可通过）——随机位流/假文本与固定文本编码差异远超容错（概率 ~2⁻ⁿ），杜绝误判
+- 手动参数提取直接展示结果（用户主动，仅过滤空/乱码符）
+
+## [1.1.33] - 2026-08-18
+
+### Fixed
+- **修复 Logo 自动提取被假文本截胡**：文本提取曾把 Logo 水印图的乱码误判为文本（截断 Logo 阶段）→ 提取校验 + WAM 匹配改为暂存兜底（不再阻断 DWT 阶段，优先级：手动 > DWT > WAM > 32 位码）
+
 ## [1.1.32] - 2026-08-18
 
 ### Changed

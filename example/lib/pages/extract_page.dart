@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -76,14 +77,14 @@ List<WmRecord> rankedBySize(List<WmRecord> recs, (int, int) srcSize) {
 }
 
 /// 记录 [rec] 在 [srcSize] 图片上的「网格再同步」候选数（与 resyncCandidates
-/// 的生成逻辑一致：尺寸相同/记录尺寸未知 → 1；否则拉伸+填充 → 3）。
-/// 用于提取进度条的原子步骤预算。
+/// 的生成逻辑一致：尺寸相同/记录尺寸未知 → 1；否则拉伸+等比填充+原大小
+/// 放置 → 4）。用于提取进度条的原子步骤预算。
 int candidateCount(WmRecord rec, (int, int) srcSize) {
   final cw = rec.cw;
   final ch = rec.ch;
   if (cw <= 0 || ch <= 0 || cw > 8192 || ch > 8192) return 1;
   if (cw == srcSize.$1 && ch == srcSize.$2) return 1;
-  return 3;
+  return 4;
 }
 
 class _ExtractPageState extends State<ExtractPage> {
@@ -231,6 +232,8 @@ class _ExtractPageState extends State<ExtractPage> {
       var found = false;
       var wamUnavailable = false;
       String? wamCodeOnly;
+      // WAM 匹配命中暂存（不阻断 DWT 阶段；DWT 全失败时兜底展示）。
+      (String, WmRecord, int)? wamHit;
       // 手动模式单次提取：不确定进度；auto 模式按「原子步骤」显示确定进度。
       // 原子步骤 = 解码 1 + WAM 每次尝试 + 每个 DWT 还原候选（text/logo）。
       // 候选数按记录载体尺寸与图片尺寸的关系预算（与 resyncCandidates 一致），
@@ -267,13 +270,14 @@ class _ExtractPageState extends State<ExtractPage> {
           if (mounted) {
             setState(() => _statusText = '正在按手动参数提取文本水印…');
           }
-          final result =
+          // 手动提取：用户主动提供参数，直接展示提取结果（仅过滤空/\uFFFD）。
+          final (text, _) =
               await compute(_extractTextIsolate, (bytes, manualLen, pw));
-          if (result != null && result.isNotEmpty) {
+          if (text != null) {
             found = true;
             if (mounted) {
               setState(() {
-                _resultText = result;
+                _resultText = text;
                 _resultNote = '文本水印 · 手动参数（长度 $manualLen）';
               });
             }
@@ -353,15 +357,11 @@ class _ExtractPageState extends State<ExtractPage> {
               final code = WamCodec.bitsToStr(bestBits);
               final match = await WmHistory.matchWam(bestBits, 4);
               if (match != null) {
-                found = true;
-                if (mounted) {
-                  setState(() {
-                    _wamCode = code;
-                    _resultText = match.$1.text ?? '';
-                    _resultNote =
-                        '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
-                  });
-                }
+                // WAM 命中暂存，不立即 found：WAM 置信度在真实照片上可能
+                // 虚高（DWT 图/无痕图实测 conf 0~0.93，真机照片行为未知），
+                // 误匹配会阻断 DWT 阶段导致 Logo/文本提不出。DWT 优先展示，
+                // WAM 命中仅在 DWT 全失败时兜底显示。
+                wamHit = (code, match.$1, match.$2);
               } else {
                 // Code readable on any device, but text recovery needs the
                 // embedder's local history — keep it to show if nothing else
@@ -403,7 +403,7 @@ class _ExtractPageState extends State<ExtractPage> {
           final candidates = await resyncCandidates(bytes, rec.cw, rec.ch,
               srcW: bytesSize.$1, srcH: bytesSize.$2);
           for (final cand in candidates) {
-            final result = await compute(
+            final (text, bits) = await compute(
               _extractTextIsolate,
               (cand, len, rec.pw),
             );
@@ -411,11 +411,18 @@ class _ExtractPageState extends State<ExtractPage> {
               done++;
               bump();
             }
-            if (result != null && result.isNotEmpty) {
+            // 以记录原文为基准校验（容错 2 位）：随机位流与固定文本编码
+            // 差异必远大于 2 —— 假文本无法通过；轻损（JPEG q70 1 bit 错）
+            // 真文本可通过。无原文的旧记录跳过（无法验证）。
+            final recText = rec.text;
+            if (bits != null &&
+                recText != null &&
+                recText.isNotEmpty &&
+                recBitsMatch(recText, bits)) {
               found = true;
               if (mounted) {
                 setState(() {
-                  _resultText = result;
+                  _resultText = text ?? recText;
                   _resultNote = candidates.length > 1
                       ? '文本水印 · 自动匹配长度 $len（已还原尺寸 ${rec.cw}x${rec.ch}）'
                       : '文本水印 · 自动匹配长度 $len';
@@ -496,10 +503,17 @@ class _ExtractPageState extends State<ExtractPage> {
         }
       }
 
-      if (found) Haptics.success();
+      if (found || wamHit != null) Haptics.success();
 
       if (!found && mounted) {
-        if (wamCodeOnly != null) {
+        if (wamHit != null) {
+          final hit = wamHit;
+          setState(() {
+            _wamCode = hit.$1;
+            _resultText = hit.$2.text ?? '';
+            _resultNote = '强鲁棒水印 · 匹配到本机记录（${hit.$3} 位差异）';
+          });
+        } else if (wamCodeOnly != null) {
           setState(() {
             _wamCode = wamCodeOnly;
             _resultText = '';
@@ -968,20 +982,49 @@ class _ExtractPageState extends State<ExtractPage> {
 }
 
 /// DWT text extract in a background isolate (top-level, AOT-safe).
-/// Returns null when nothing readable was recovered.
-String? _extractTextIsolate((Uint8List, int, int) args) {
+/// Returns (text, rawBits) or (null, null) when nothing readable was
+/// recovered; [rawBits] 供循环一致性校验（拒绝假文本/乱码）。
+(String?, List<int>?) _extractTextIsolate((Uint8List, int, int) args) {
   final (bytes, len, pw) = args;
   final bwm =
       BlindWatermark(passwordWm: pw, passwordImg: pw, d1: 36.0, d2: 20.0);
   try {
     final text = bwm.extractStringFromBytes(bytes, len);
-    if (text.trim().isEmpty || text.contains('\uFFFD')) return null;
-    return text;
+    if (text.trim().isEmpty || text.contains('\uFFFD')) return (null, null);
+    final bits =
+        bwm.extractBitsFromBytes(bytes, len).map((b) => b ? 1 : 0).toList();
+    return (text, bits);
   } catch (_) {
-    return null;
+    return (null, null);
   } finally {
     bwm.dispose();
   }
+}
+
+/// 记录原文重编码校验（数学严格）：提取的原始 bit 流与「记录原文按嵌入
+/// 编码（utf8 → hex → bin 去前导零，与 C++ setWatermarkString 一致）生成
+/// 的 bit 流」汉明距离 ≤ [tolerance] 才判为该记录的水印。
+///
+/// 容错 2 位：JPEG 压缩等轻损下真文本实测最多 1 bit 错（q70 中文）；随机
+/// 位流（假文本/他人图）与固定文本编码的差异远大于 2（概率 ~2^-n，数学
+/// 上不可混）。以记录原文为基准而非「提取出的文本」——提取文本重编码对
+/// 随机位流有 15/16 的假一致反例（首 4 bit 非全 0 时 bitsToText 可逆）。
+bool recBitsMatch(String recText, List<int> rawBits, {int tolerance = 2}) {
+  final hex = utf8
+      .encode(recText)
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+  final recBits = BigInt.parse(hex, radix: 16)
+      .toRadixString(2)
+      .split('')
+      .map((c) => c == '1' ? 1 : 0)
+      .toList();
+  if (recBits.length != rawBits.length) return false;
+  var d = 0;
+  for (var i = 0; i < recBits.length; i++) {
+    if (recBits[i] != rawBits[i]) d++;
+  }
+  return d <= tolerance;
 }
 
 /// DWT logo extract in a background isolate (top-level, AOT-safe).

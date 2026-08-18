@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flutter_blind_watermark_example/pages/extract_page.dart';
@@ -69,6 +71,59 @@ void main() {
       final out = rankedBySize(recs, src);
       expect(out.length, recs.length);
       expect(out.toSet(), recs.toSet());
+    });
+  });
+
+  group('recBitsMatch 记录原文校验（容错 2 位，拒绝假文本）', () {
+    List<int> encode(String text) {
+      final hex = utf8
+          .encode(text)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+      return BigInt.parse(hex, radix: 16)
+          .toRadixString(2)
+          .split('')
+          .map((c) => c == '1' ? 1 : 0)
+          .toList();
+    }
+
+    test('真文本：提取 bit 与记录原文编码一致 → 通过', () {
+      final bits = encode('Hello DWT 2026 test');
+      expect(recBitsMatch('Hello DWT 2026 test', bits), isTrue);
+      final cn = encode('盲水印DWT闭环测试-2026');
+      expect(recBitsMatch('盲水印DWT闭环测试-2026', cn), isTrue);
+    });
+
+    test('容错：JPEG 轻损 1~2 bit 错 → 通过', () {
+      final bits = encode('Hello DWT 2026 test');
+      bits[5] ^= 1;
+      expect(recBitsMatch('Hello DWT 2026 test', bits), isTrue);
+      bits[30] ^= 1;
+      expect(recBitsMatch('Hello DWT 2026 test', bits), isTrue);
+    });
+
+    test('3 bit 错 → 拒绝（超出容错）', () {
+      final bits = encode('Hello DWT 2026 test');
+      bits[5] ^= 1;
+      bits[30] ^= 1;
+      bits[60] ^= 1;
+      expect(recBitsMatch('Hello DWT 2026 test', bits), isFalse);
+    });
+
+    test('假文本：随机位流与固定文本编码差异巨大 → 拒绝', () {
+      final recBits = encode('Hello DWT 2026 test');
+      final random = List<int>.generate(recBits.length, (i) => i % 3 == 0 ? 1 : 0);
+      expect(recBitsMatch('Hello DWT 2026 test', random), isFalse);
+    });
+
+    test('另一段文本的编码 → 拒绝', () {
+      final bits = encode('另一个完全不同的文本内容');
+      expect(recBitsMatch('Hello DWT 2026 test', bits), isFalse);
+    });
+
+    test('长度不同 → 拒绝', () {
+      final bits = encode('short');
+      expect(recBitsMatch('Hello DWT 2026 test', bits), isFalse);
     });
   });
 }
