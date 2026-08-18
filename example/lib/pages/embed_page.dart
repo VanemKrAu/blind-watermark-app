@@ -29,6 +29,9 @@ class EmbedPage extends StatefulWidget {
 
 enum _InputType { text, image }
 
+/// 文本水印的嵌入方案：WAM 强鲁棒（默认）或经典 DWT。
+enum _TextScheme { wam, dwt }
+
 /// Max long edge for DWT embedding. The DWT-DCT-SVD pipeline holds ~2.5x the
 /// image as YUV double matrices: a 12MP photo peaks at ~1GB native memory and
 /// kills the app (LMK) on phones. 1536 keeps the peak around ~110MB — safe
@@ -46,6 +49,7 @@ class _EmbedPageState extends State<EmbedPage> {
   String? _methodNote;
 
   _InputType _inputType = _InputType.text;
+  _TextScheme _textScheme = _TextScheme.wam;
   final TextEditingController _textController = TextEditingController();
   final TextEditingController _passwordController =
       TextEditingController(text: '1');
@@ -223,72 +227,49 @@ class _EmbedPageState extends State<EmbedPage> {
         }
       } else {
         final text = _textController.text.trim();
-        // Text watermark: ALWAYS the strong-robust (WAM) scheme, regardless of
-        // image size — the native side now embeds at 256px and reconstructs a
-        // sharp full-resolution output (upscaled delta blended with the sharp
-        // carrier). Survives crop/rotation/compression. On another device only
-        // the 32-bit code is visible (text recovery needs this device's
-        // history). Falls back to DWT text if the models are missing or
-        // inference fails at runtime.
-        var wamUnavailable = false;
-        try {
-          final modelsDir = await WamBridge.getModelsDir();
-          if (modelsDir == null) throw Exception('模型目录不可用');
-          final bits = WamCodec.textToBits(text);
-          final code = WamCodec.bitsToStr(bits);
-          final result =
-              await compute(wamEmbedIsolate, (bytes, bits, modelsDir));
-          // 载体尺寸（水印图尺寸）：供提取时「还原回原尺寸」再同步网格。
-          final (carrierW, carrierH) = (await imageSize(result)) ?? (0, 0);
-          await WmHistory.add(WmRecord(
-            kind: 'wam',
-            text: text,
-            code: code,
-            pw: pwWm,
-            cw: carrierW,
-            ch: carrierH,
-          ));
-          if (mounted) {
-            setState(() {
-              _resultBytes = result;
-              _wamCode = code;
-              _methodNote = '强鲁棒水印（抗裁剪/旋转/压缩）';
-            });
-          }
-        } catch (_) {
-          wamUnavailable = true;
-        }
-        if (wamUnavailable) {
-          // Fallback: DWT text (legacy scheme / model missing). Capacity
-          // check first: text bits must fit the 4x4 block grid.
-          final size = await imageSize(bytes);
-          var carrier = bytes;
-          if (size != null) {
-            final (fit, cw, ch) = await _fitDwtCarrier(bytes, size);
-            carrier = fit;
-            final capacity = (cw ~/ 8) * (ch ~/ 8) - 1;
-            final bitLen = utf8.encode(text).length * 8;
-            if (bitLen > capacity) {
-              throw Exception(
-                  '水印超出容量：图片最多容纳约 $capacity bit，当前文本约需 $bitLen bit。请缩短文本或换更大的图片。');
+        if (_textScheme == _TextScheme.dwt) {
+          // 经典 DWT（用户主动选择）：密码+长度可在任意设备还原完整文本，
+          // 但容量有限、不抗几何攻击（旋转尤其弱）、大图自动缩至 1536px 内。
+          await _embedTextDwt(text, pwWm, pwImg, explicit: true);
+        } else {
+          // Text watermark: default strong-robust (WAM) scheme, regardless of
+          // image size — the native side now embeds at 256px and reconstructs a
+          // sharp full-resolution output (upscaled delta blended with the sharp
+          // carrier). Survives crop/rotation/compression. On another device only
+          // the 32-bit code is visible (text recovery needs this device's
+          // history). Falls back to DWT text if the models are missing or
+          // inference fails at runtime.
+          var wamUnavailable = false;
+          try {
+            final modelsDir = await WamBridge.getModelsDir();
+            if (modelsDir == null) throw Exception('模型目录不可用');
+            final bits = WamCodec.textToBits(text);
+            final code = WamCodec.bitsToStr(bits);
+            final result =
+                await compute(wamEmbedIsolate, (bytes, bits, modelsDir));
+            // 载体尺寸（水印图尺寸）：供提取时「还原回原尺寸」再同步网格。
+            final (carrierW, carrierH) = (await imageSize(result)) ?? (0, 0);
+            await WmHistory.add(WmRecord(
+              kind: 'wam',
+              text: text,
+              code: code,
+              pw: pwWm,
+              cw: carrierW,
+              ch: carrierH,
+            ));
+            if (mounted) {
+              setState(() {
+                _resultBytes = result;
+                _wamCode = code;
+                _methodNote = '强鲁棒水印（抗裁剪/旋转/压缩）';
+              });
             }
+          } catch (_) {
+            wamUnavailable = true;
           }
-          final result = await compute(
-            _embedTextIsolate,
-            (carrier, text, pwWm, pwImg),
-          );
-          await WmHistory.add(WmRecord(
-            kind: 'text',
-            text: text,
-            len: result.$2,
-            pw: pwWm,
-          ));
-          if (mounted) {
-            setState(() {
-              _resultBytes = result.$1;
-              _wmBitLength = result.$2;
-              _methodNote = '文本水印（强鲁棒不可用，已自动回退）';
-            });
+          if (wamUnavailable) {
+            // Fallback: DWT text (legacy scheme / model missing).
+            await _embedTextDwt(text, pwWm, pwImg);
           }
         }
       }
@@ -315,6 +296,52 @@ class _EmbedPageState extends State<EmbedPage> {
     final scaled = await downscalePng(bytes, _dwtMaxLongEdge);
     if (scaled == null) throw Exception('图片缩放失败');
     return scaled;
+  }
+
+  /// 经典 DWT 文本嵌入：容量预校验 + 载体降采样（≤1536px）+ isolate 嵌入。
+  /// 记录 kind='text'（含载体尺寸 cw/ch，提取时启用「网格再同步」还原）。
+  /// [explicit] 表示用户主动选择 DWT（而非 WAM 失败回退），用于文案区分。
+  Future<void> _embedTextDwt(String text, int pwWm, int pwImg,
+      {bool explicit = false}) async {
+    final bytes = _imageBytes!;
+    final size = await imageSize(bytes);
+    var carrier = bytes;
+    var cw = size?.$1 ?? 0;
+    var ch = size?.$2 ?? 0;
+    if (size != null) {
+      final (fit, fitCw, fitCh) = await _fitDwtCarrier(bytes, size);
+      carrier = fit;
+      cw = fitCw;
+      ch = fitCh;
+      final capacity = (cw ~/ 8) * (ch ~/ 8) - 1;
+      final bitLen = utf8.encode(text).length * 8;
+      if (bitLen > capacity) {
+        throw Exception(explicit
+            ? '水印超出容量：图片最多容纳约 $capacity bit，当前文本约需 $bitLen bit。请缩短文本、换更大的图片，或改用强鲁棒方案。'
+            : '水印超出容量：图片最多容纳约 $capacity bit，当前文本约需 $bitLen bit。请缩短文本或换更大的图片。');
+      }
+    }
+    final result = await compute(
+      _embedTextIsolate,
+      (carrier, text, pwWm, pwImg),
+    );
+    await WmHistory.add(WmRecord(
+      kind: 'text',
+      text: text,
+      len: result.$2,
+      pw: pwWm,
+      cw: cw,
+      ch: ch,
+    ));
+    if (mounted) {
+      setState(() {
+        _resultBytes = result.$1;
+        _wmBitLength = result.$2;
+        _methodNote = explicit
+            ? '经典文本水印（DWT，密码 + 长度可跨设备提取完整文本）'
+            : '文本水印（强鲁棒不可用，已自动回退经典 DWT）';
+      });
+    }
   }
 
   Future<void> _saveResult() async {
@@ -407,8 +434,50 @@ class _EmbedPageState extends State<EmbedPage> {
             ),
             const SizedBox(height: 8),
 
+            if (_inputType == _InputType.text) ...[
+              SegmentedButton<_TextScheme>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(
+                    value: _TextScheme.wam,
+                    icon: Icon(Icons.bolt),
+                    label: Text('强鲁棒（WAM）'),
+                  ),
+                  ButtonSegment(
+                    value: _TextScheme.dwt,
+                    icon: Icon(Icons.water_drop_outlined),
+                    label: Text('经典（DWT）'),
+                  ),
+                ],
+                selected: {_textScheme},
+                onSelectionChanged: (s) {
+                  setState(() => _textScheme = s.first);
+                  _clearResult();
+                },
+              ),
+              const SizedBox(height: 6),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, animation) =>
+                    FadeTransition(opacity: animation, child: child),
+                child: Text(
+                  _textScheme == _TextScheme.wam
+                      ? '强鲁棒（默认）：任意图幅、抗裁剪/旋转/压缩；其他设备仅见 32 位标识码'
+                      : '经典 DWT：密码 + 长度即可在任何设备还原完整文本；不抗旋转、大图自动缩至 1536px、容量受图片限制',
+                  key: ValueKey(_textScheme),
+                  style: TextStyle(
+                    color: colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+
             Text(
-              '无需选择方案：文本水印一律使用强鲁棒方案（抗裁剪/旋转/压缩），Logo 使用 DWT 方案完整还原',
+              '文本水印默认强鲁棒，可切换经典 DWT；Logo 水印使用 DWT 方案完整还原',
               style: TextStyle(
                 color: colorScheme.onSurfaceVariant,
                 fontSize: 12,

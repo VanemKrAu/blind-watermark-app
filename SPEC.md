@@ -3,7 +3,8 @@
 ## 目标
 
 安卓应用：选择图片 → 本地离线嵌入盲水印（文本 / Logo 图）→ 保存；可提取验证。
-**文本水印一律走 WAM 强鲁棒**（32 位标识码，抗裁剪/旋转/压缩；完整文字仅本机还原），
+**文本水印默认走 WAM 强鲁棒**（32 位标识码，抗裁剪/旋转/压缩；完整文字仅本机还原），
+**可切换经典 DWT**（密码 + 长度即可跨设备还原完整文本，但容量有限、不抗旋转），
 **Logo 走 DWT**（完整还原）。算法源自
 [guofei9987/blind_watermark](https://github.com/guofei9987/blind_watermark)（MIT）与
 [facebookresearch/watermark-anything](https://github.com/facebookresearch/watermark-anything)（MIT），
@@ -58,4 +59,5 @@
 - 支持输入：PNG/JPEG/WebP/BMP/GIF（HEIC 等经 Flutter 引擎转 PNG）；输出：PNG
 - DWT 容量：bit 数 < 图片 4×4 块数（块数 = (h/8)×(w/8)，512×512 图 ≈ 4096 bit）；WAM 容量固定 32 bit（文本→CRC32 标识码，任意文本长度均可容纳）
 - WAM 文本水印：嵌入在 256px，输出保持载体原分辨率锐利（delta 放大与锐利原图混合）；提取端统一缩放 256px，任意图幅可提取
+- 经典 DWT 文本水印（可选方案）：容量 = (载体 w/8)×(h/8) bit 以内，载体长边 ≤1536px；记录含 bit 长度与载体尺寸，提取端自动匹配或手动参数（密码+长度）均可
 - 不做：可见水印、视频水印、去水印

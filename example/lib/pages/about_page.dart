@@ -41,7 +41,7 @@ class AboutPage extends StatelessWidget {
             children: [
               _Bullet(
                 '文本水印',
-                '一律使用强鲁棒方案（32 位标识码），抗裁剪 / 旋转 / 压缩；完整文字仅嵌入设备本机可还原。',
+                '默认强鲁棒（WAM）：32 位标识码，抗裁剪 / 旋转 / 压缩，完整文字仅本机还原；可切换经典 DWT：密码 + 长度即可在任意设备还原完整文本。',
               ),
               _Bullet(
                 'Logo 水印',
@@ -71,7 +71,7 @@ class AboutPage extends StatelessWidget {
               ),
               _Bullet(
                 '局限',
-                '本机记录为明文存储（root 设备可读）；整数密码可被暴力枚举；跨设备无法自动还原文本，仅可见 32 位标识码。',
+                '本机记录为明文存储（root 设备可读）；整数密码可被暴力枚举；WAM 文本跨设备仅可见 32 位标识码（完整文字需本机记录，跨设备请改用 DWT 方案）。',
                 leading: Icons.info_outline,
               ),
             ],
@@ -84,7 +84,7 @@ class AboutPage extends StatelessWidget {
             title: '鲁棒性边界（实测）',
             children: [
               const Text(
-                '可抵抗以下攻击：',
+                'WAM 强鲁棒（文本默认方案）可抵抗：',
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 4),
@@ -103,6 +103,24 @@ class AboutPage extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
+                'DWT（Logo / 经典文本）可抵抗：',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              const Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  Chip(label: Text('JPEG q50~95')),
+                  Chip(label: Text('高斯模糊 3/5/7')),
+                  Chip(label: Text('局部涂黑 10%~50%')),
+                  Chip(label: Text('亮度 -20%')),
+                  Chip(label: Text('缩放 50%（自动还原）')),
+                  Chip(label: Text('裁剪 75%（自动填补）')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const Text(
                 '以下为技术边界（业界普遍）：',
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
@@ -111,7 +129,7 @@ class AboutPage extends StatelessWidget {
                 spacing: 6,
                 runSpacing: 4,
                 children: [
-                  Chip(label: Text('>10° 旋转')),
+                  Chip(label: Text('>10° 旋转（DWT）')),
                   Chip(label: Text('裁剪 <50%')),
                   Chip(label: Text('强噪声')),
                 ],

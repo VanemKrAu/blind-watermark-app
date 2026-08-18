@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.23] - 2026-08-18
+
+### Added
+- **文本水印可自由选择算法**：嵌入页文本模式新增方案切换（强鲁棒 WAM / 经典 DWT），默认强鲁棒保持原行为
+  - 经典 DWT：密码 + 长度即可在任意设备还原完整文本（跨设备可用），代价是容量有限（载体 4×4 块数以内）、不抗旋转、大图自动缩至 1536px
+  - DWT 文本记录新增载体尺寸（cw/ch），提取端自动启用「网格再同步」还原，缩放/裁剪后的图更易救回
+
+### Changed
+- 关于页「功能与用法 / 局限 / 鲁棒性边界」按 WAM / DWT 两方案分列，不再混用
+
 ## [1.1.20] - 2026-08-17
 
 ### Added

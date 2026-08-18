@@ -287,8 +287,14 @@ class _ExtractPageState extends State<ExtractPage> {
           !dwtSkippedBig &&
           history.any((e) => e.kind == 'text')) {
         if (mounted) setState(() => _statusText = '正在尝试文本水印…');
-        final textRecs = history.where((e) => e.kind == 'text').take(10);
-        for (final rec in textRecs) {
+        final textRecs =
+            history.where((e) => e.kind == 'text').take(10).toList();
+        for (var i = 0; i < textRecs.length && !found; i++) {
+          final rec = textRecs[i];
+          if (mounted && textRecs.length > 1) {
+            setState(() =>
+                _statusText = '正在尝试文本水印（${i + 1}/${textRecs.length}）…');
+          }
           final len = rec.len;
           if (len == null || len <= 0) continue;
           final candidates = await resyncCandidates(bytes, rec.cw, rec.ch,
@@ -324,8 +330,14 @@ class _ExtractPageState extends State<ExtractPage> {
           !dwtSkippedBig &&
           history.any((e) => e.kind == 'logo')) {
         if (mounted) setState(() => _statusText = '正在尝试 Logo 水印…');
-        final logoRecs = history.where((e) => e.kind == 'logo').take(5);
-        for (final rec in logoRecs) {
+        final logoRecs =
+            history.where((e) => e.kind == 'logo').take(5).toList();
+        for (var i = 0; i < logoRecs.length && !found; i++) {
+          final rec = logoRecs[i];
+          if (mounted && logoRecs.length > 1) {
+            setState(() =>
+                _statusText = '正在尝试 Logo 水印（${i + 1}/${logoRecs.length}）…');
+          }
           final w = rec.w;
           final h = rec.h;
           if (w == null || h == null || w <= 0 || h <= 0) continue;
