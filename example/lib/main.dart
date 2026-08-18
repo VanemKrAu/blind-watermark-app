@@ -102,7 +102,7 @@ class BlindWatermarkApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '盲水印',
+      title: 'BlindWatermark',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
       theme: ThemeData(

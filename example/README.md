@@ -1,6 +1,6 @@
-# 盲水印 App（example）
+# BlindWatermark App（example）
 
-本目录为盲水印安卓 App 的完整应用工程（Flutter + FFI 插件）。
+本目录为 BlindWatermark 安卓 App 的完整应用工程（Flutter + FFI 插件）。
 
 ## 功能
 

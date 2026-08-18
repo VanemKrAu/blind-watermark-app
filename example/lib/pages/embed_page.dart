@@ -32,15 +32,14 @@ enum _InputType { text, image }
 /// 文本水印的嵌入方案：WAM 强鲁棒（默认）或经典 DWT。
 enum _TextScheme { wam, dwt }
 
-/// Max long edge for DWT embedding. The DWT-DCT-SVD pipeline holds ~2.5x the
-/// image as YUV double matrices: a 12MP photo peaks at ~1GB native memory and
-/// kills the app (LMK) on phones. 1536 keeps the peak around ~110MB — safe
-/// even on low-RAM devices — while staying sharp enough for sharing.
-/// Extraction is unaffected: the block grid derives from the image's own
-/// size, and the saved watermarked image keeps this size.
-const int _dwtMaxLongEdge = 1536;
+/// DWT 嵌入分辨率限制（用户决策 2026-08-18）：彻底取消——图片多大就原尺寸
+/// 嵌入（13MP 真机实测无闪退）。代价：超大图嵌入耗时长，进度条明示。
+const int _dwtMaxLongEdge = 100000;
 
 class _EmbedPageState extends State<EmbedPage> {
+  /// 原始选图字节（不解码常驻，嵌入时按需解码全尺寸）。
+  Uint8List? _imageRaw;
+  /// 预览/处理小图（长边 ≤1024，选图秒开；WAM 可直接用）。
   Uint8List? _imageBytes;
   Uint8List? _resultBytes;
   String? _imageName;
@@ -58,6 +57,7 @@ class _EmbedPageState extends State<EmbedPage> {
 
   bool _processing = false;
   String? _error;
+  String? _statusText;
 
   @override
   void dispose() {
@@ -92,13 +92,11 @@ class _EmbedPageState extends State<EmbedPage> {
     if (picked == null) return;
     final rawBytes = picked.$1;
     final rawName = picked.$2;
-    // Decode with an engine-side scaled decode: camera photos (12-108MP)
-    // never materialize at full resolution in app memory — that alone could
-    // get the process killed before embedding even starts. Images at or
-    // below the DWT cap are kept unchanged.
-    final scaled =
-        await decodeToPngScaled(rawBytes, maxDim: _dwtMaxLongEdge);
-    if (scaled == null) {
+    // 预览只解码小图（长边 ≤1024）：全分辨率解码+PNG 重编码要好几秒，
+    // 预览框无需那么大；原始字节保留，嵌入时按需解码（_decodeWork）。
+    final preview =
+        await decodeToPngScaled(rawBytes, maxDim: 1024);
+    if (preview == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('无法读取该图片格式')));
@@ -106,7 +104,8 @@ class _EmbedPageState extends State<EmbedPage> {
       return;
     }
     setState(() {
-      _imageBytes = scaled.$1;
+      _imageRaw = rawBytes;
+      _imageBytes = preview.$1;
       _imageName = rawName;
       _resultBytes = null;
       _wmBitLength = null;
@@ -114,6 +113,14 @@ class _EmbedPageState extends State<EmbedPage> {
       _methodNote = null;
       _error = null;
     });
+  }
+
+  /// 嵌入工作图：按需全尺寸解码（长边 ≤[_dwtMaxLongEdge]），供 WAM/DWT 使用。
+  Future<Uint8List> _decodeWork() async {
+    final raw = _imageRaw ?? _imageBytes!;
+    final scaled = await decodeToPngScaled(raw, maxDim: _dwtMaxLongEdge);
+    if (scaled == null) throw Exception('图片解码失败');
+    return scaled.$1;
   }
 
   Future<void> _pickLogo() async {
@@ -168,6 +175,7 @@ class _EmbedPageState extends State<EmbedPage> {
     setState(() {
       _processing = true;
       _error = null;
+      _statusText = '正在解码图片…';
       _resultBytes = null;
       _wmBitLength = null;
       _wamCode = null;
@@ -175,7 +183,12 @@ class _EmbedPageState extends State<EmbedPage> {
     });
 
     try {
-      final bytes = _imageBytes!;
+      // 全尺寸工作图：仅在嵌入时解码（选图预览已用小图，秒开）。
+      final bytes = await _decodeWork();
+      if (mounted) {
+        setState(() =>
+            _statusText = '正在嵌入水印…（图片较大可能需要较长时间）');
+      }
       final inputType = _inputType;
       // Security: derive DWT seeds from the user password.
       final (pwWm, pwImg) = WmSecurity.seeds(_passwordController.text);
@@ -229,8 +242,8 @@ class _EmbedPageState extends State<EmbedPage> {
         final text = _textController.text.trim();
         if (_textScheme == _TextScheme.dwt) {
           // 经典 DWT（用户主动选择）：密码+长度可在任意设备还原完整文本，
-          // 但容量有限、不抗几何攻击（旋转尤其弱）、大图自动缩至 1536px 内。
-          await _embedTextDwt(text, pwWm, pwImg, explicit: true);
+          // 但容量有限、不抗几何攻击（旋转尤其弱）、分辨率无上限。
+          await _embedTextDwt(bytes, text, pwWm, pwImg, explicit: true);
         } else {
           // Text watermark: default strong-robust (WAM) scheme, regardless of
           // image size — the native side now embeds at 256px and reconstructs a
@@ -269,7 +282,7 @@ class _EmbedPageState extends State<EmbedPage> {
           }
           if (wamUnavailable) {
             // Fallback: DWT text (legacy scheme / model missing).
-            await _embedTextDwt(text, pwWm, pwImg);
+            await _embedTextDwt(bytes, text, pwWm, pwImg);
           }
         }
       }
@@ -283,7 +296,12 @@ class _EmbedPageState extends State<EmbedPage> {
     } catch (e) {
       if (mounted) setState(() => _error = '嵌入失败：$e');
     } finally {
-      if (mounted) setState(() => _processing = false);
+      if (mounted) {
+        setState(() {
+          _processing = false;
+          _statusText = null;
+        });
+      }
     }
   }
 
@@ -298,12 +316,12 @@ class _EmbedPageState extends State<EmbedPage> {
     return scaled;
   }
 
-  /// 经典 DWT 文本嵌入：容量预校验 + 载体降采样（≤1536px）+ isolate 嵌入。
+  /// 经典 DWT 文本嵌入：容量预校验 + isolate 嵌入（分辨率无上限）。
   /// 记录 kind='text'（含载体尺寸 cw/ch，提取时启用「网格再同步」还原）。
+  /// [bytes] 为嵌入工作图（全尺寸解码后，≤[_dwtMaxLongEdge]）。
   /// [explicit] 表示用户主动选择 DWT（而非 WAM 失败回退），用于文案区分。
-  Future<void> _embedTextDwt(String text, int pwWm, int pwImg,
+  Future<void> _embedTextDwt(Uint8List bytes, String text, int pwWm, int pwImg,
       {bool explicit = false}) async {
-    final bytes = _imageBytes!;
     final size = await imageSize(bytes);
     var carrier = bytes;
     var cw = size?.$1 ?? 0;
@@ -465,7 +483,7 @@ class _EmbedPageState extends State<EmbedPage> {
                 child: Text(
                   _textScheme == _TextScheme.wam
                       ? '强鲁棒（默认）：任意图幅、抗裁剪/旋转/压缩；其他设备仅见 32 位标识码'
-                      : '经典 DWT：密码 + 长度即可在任何设备还原完整文本；不抗旋转、大图自动缩至 1536px、容量受图片限制',
+                      : '经典 DWT：密码 + 长度即可在任何设备还原完整文本；不抗旋转、分辨率无上限、容量受图片限制',
                   key: ValueKey(_textScheme),
                   style: TextStyle(
                     color: colorScheme.onSurfaceVariant,
@@ -506,6 +524,27 @@ class _EmbedPageState extends State<EmbedPage> {
                   : const Icon(Icons.water_drop),
               label: Text(_processing ? '正在嵌入…' : '嵌入水印'),
             ),
+            if (_processing) ...[
+              const SizedBox(height: 12),
+              const LinearProgressIndicator(minHeight: 4),
+              const SizedBox(height: 8),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, animation) =>
+                    FadeTransition(opacity: animation, child: child),
+                child: Text(
+                  _statusText ?? '正在处理…',
+                  key: ValueKey(_statusText),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
 
             AnimatedSwitcher(

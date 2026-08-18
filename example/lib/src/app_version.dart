@@ -19,7 +19,7 @@ final Future<String> _versionFuture = _loadVersion();
 
 /// Shows the app version from package info (not hardcoded).
 class AppVersionText extends StatelessWidget {
-  const AppVersionText({super.key, this.style, this.prefix = '盲水印 v'});
+  const AppVersionText({super.key, this.style, this.prefix = 'BlindWatermark v'});
 
   final TextStyle? style;
   final String prefix;

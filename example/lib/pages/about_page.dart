@@ -248,9 +248,11 @@ class _Header extends StatelessWidget {
           child: Icon(Icons.water_drop, size: 40, color: cs.primary),
         ),
         const SizedBox(height: 12),
-        Text('盲水印', style: Theme.of(context).textTheme.headlineSmall),
+        Text('BlindWatermark', style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 4),
+        // 第二行只显示版本号，不重复项目名（prefix 用 'v'）。
         AppVersionText(
+          prefix: 'v',
           style: TextStyle(color: cs.outline, fontSize: 12),
         ),
         const SizedBox(height: 12),

@@ -25,21 +25,73 @@ class ExtractPage extends StatefulWidget {
   State<ExtractPage> createState() => _ExtractPageState();
 }
 
-/// Must match the embed-page cap: the app never produces watermarked images
-/// larger than this, and DWT extraction of larger images would blow up the
-/// native memory (~700MB at 12MP) and crash the app.
-const int _dwtMaxLongEdge = 1536;
+/// DWT 提取分辨率限制（用户决策 2026-08-18）：彻底取消——任意尺寸直接提取
+/// （13MP 真机实测嵌入/提取无闪退）。代价：超大图提取耗时长，进度条明示。
+const int _dwtMaxLongEdge = 100000;
 
 enum _ExtractType { auto, text, image }
 
+/// 容量硬预筛（零误伤）：文本 bit 数 / Logo 像素数超过载体容量
+/// （(cw/8)×(h/8)）的记录在数学上不可能嵌在这张图上 → 跳过。
+/// cw/ch 未知（旧记录）或非法时不预筛（放行）；参数无效的记录直接排除。
+bool capacityOk(WmRecord rec) {
+  if (rec.kind == 'text') {
+    final len = rec.len;
+    if (len == null || len <= 0) return false; // 无长度无法尝试
+    final cw = rec.cw;
+    final ch = rec.ch;
+    if (cw <= 0 || ch <= 0 || cw > 8192 || ch > 8192) return true;
+    return len <= (cw ~/ 8) * (ch ~/ 8);
+  }
+  if (rec.kind == 'logo') {
+    final w = rec.w;
+    final h = rec.h;
+    if (w == null || h == null || w <= 0 || h <= 0) return false;
+    final cw = rec.cw;
+    final ch = rec.ch;
+    if (cw <= 0 || ch <= 0 || cw > 8192 || ch > 8192) return true;
+    return w * h <= (cw ~/ 8) * (ch ~/ 8);
+  }
+  return true;
+}
+
+/// 尺寸匹配排序（零误伤，只调顺序不跳过）：载体尺寸与当前图相同的记录
+/// 排最前（最可能命中且仅需原图候选）；组内按时间倒序。
+List<WmRecord> rankedBySize(List<WmRecord> recs, (int, int) srcSize) {
+  int same(WmRecord r) {
+    final cw = r.cw;
+    final ch = r.ch;
+    if (cw <= 0 || ch <= 0) return 1;
+    if (cw == srcSize.$1 && ch == srcSize.$2) return 0;
+    return 1;
+  }
+
+  final out = List<WmRecord>.from(recs);
+  out.sort((a, b) {
+    final s = same(a).compareTo(same(b));
+    if (s != 0) return s;
+    return b.ts.compareTo(a.ts);
+  });
+  return out;
+}
+
+/// 记录 [rec] 在 [srcSize] 图片上的「网格再同步」候选数（与 resyncCandidates
+/// 的生成逻辑一致：尺寸相同/记录尺寸未知 → 1；否则拉伸+填充 → 3）。
+/// 用于提取进度条的原子步骤预算。
+int candidateCount(WmRecord rec, (int, int) srcSize) {
+  final cw = rec.cw;
+  final ch = rec.ch;
+  if (cw <= 0 || ch <= 0 || cw > 8192 || ch > 8192) return 1;
+  if (cw == srcSize.$1 && ch == srcSize.$2) return 1;
+  return 3;
+}
+
 class _ExtractPageState extends State<ExtractPage> {
+  /// 原始选图字节（提取时按需全尺寸解码）。
+  Uint8List? _imageRaw;
+  /// 预览小图（长边 ≤1024，选图秒开）。
   Uint8List? _imageBytes;
   String? _imageName;
-
-  /// Long edge of the image as picked (before any decode-time downscale).
-  /// DWT extraction must run on the exact watermarked size; oversized picks
-  /// are skipped with a message instead of being processed at a wrong size.
-  int _origLongEdge = 0;
 
   _ExtractType _extractType = _ExtractType.auto;
   final TextEditingController _passwordController =
@@ -51,6 +103,8 @@ class _ExtractPageState extends State<ExtractPage> {
   bool _processing = false;
   String? _error;
   String? _statusText;
+  /// 提取进度 0~1（null = 不确定阶段，如解码/单次手动提取）。
+  double? _progress;
   String? _resultText;
   String? _resultNote;
   Uint8List? _resultImage;
@@ -98,11 +152,9 @@ class _ExtractPageState extends State<ExtractPage> {
     if (picked == null) return;
     final rawBytes = picked.$1;
     final rawName = picked.$2;
-    // Engine-side scaled decode: never hold a full-resolution camera photo
-    // in memory; the WAM path downsizes internally anyway and oversized DWT
-    // picks are skipped via the recorded original size.
-    final scaled =
-        await decodeToPngScaled(rawBytes, maxDim: _dwtMaxLongEdge);
+    // 预览只解码小图（长边 ≤1024，秒开）；原始字节保留，提取时按需解码
+    // 全尺寸工作图（WAM 内部缩 256，DWT 需嵌入时的同尺寸）。
+    final scaled = await decodeToPngScaled(rawBytes, maxDim: 1024);
     if (scaled == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -110,13 +162,13 @@ class _ExtractPageState extends State<ExtractPage> {
       }
       return;
     }
-    final origLongEdge = scaled.$2 > scaled.$3 ? scaled.$2 : scaled.$3;
     setState(() {
+      _imageRaw = rawBytes;
       _imageBytes = scaled.$1;
       _imageName = rawName;
-      _origLongEdge = origLongEdge;
       _error = null;
       _statusText = null;
+      _progress = null;
       _resultText = null;
       _resultNote = null;
       _resultImage = null;
@@ -160,28 +212,56 @@ class _ExtractPageState extends State<ExtractPage> {
     });
 
     try {
-      final bytes = _imageBytes!;
-      // 图片尺寸缓存：供还原候选生成复用（避免每个记录重复解码）。
-      final bytesSize = await imageSize(bytes);
       final history = await WmHistory.active();
+      // 提取工作图：按需全尺寸解码（限制已取消，DWT 需嵌入时的同尺寸）。
+      final raw = _imageRaw ?? _imageBytes!;
+      final decoded = await decodeToPngScaled(raw, maxDim: _dwtMaxLongEdge);
+      if (decoded == null) {
+        if (mounted) {
+          setState(() {
+            _processing = false;
+            _error = '图片解码失败';
+          });
+        }
+        return;
+      }
+      final bytes = decoded.$1;
+      // 图片尺寸缓存：供还原候选生成复用（避免每个记录重复解码）。
+      final bytesSize = (decoded.$2, decoded.$3);
       var found = false;
       var wamUnavailable = false;
-      var dwtSkippedBig = false;
       String? wamCodeOnly;
-
-      // DWT extraction derives its block grid from the image's own size, so
-      // it must run on the exact watermarked image; and a 12MP image peaks at
-      // ~700MB native memory in the double-precision pipeline — killed by the
-      // OS. The app never produces watermarked images larger than 1536px, so
-      // skipping oversized picks is safe.
-      if (_origLongEdge > _dwtMaxLongEdge) {
-        dwtSkippedBig = true;
+      // 手动模式单次提取：不确定进度；auto 模式按「原子步骤」显示确定进度。
+      // 原子步骤 = 解码 1 + WAM 每次尝试 + 每个 DWT 还原候选（text/logo）。
+      // 候选数按记录载体尺寸与图片尺寸的关系预算（与 resyncCandidates 一致），
+      // 使进度条在每次 compute 后平滑推进，不在阶段末尾跳变。
+      final useSteps = _extractType == _ExtractType.auto;
+      var done = 0;
+      var total = 1; // 解码
+      if (useSteps) {
+        if (WamBridge.isSupported) total += 3; // WAM 三次尝试
+        for (final e in history
+            .where((e) => e.kind == 'text' && capacityOk(e))
+            .take(10)) {
+          total += candidateCount(e, bytesSize);
+        }
+        for (final e in history
+            .where((e) => e.kind == 'logo' && capacityOk(e))
+            .take(5)) {
+          total += candidateCount(e, bytesSize);
+        }
       }
-      final canDwt = !dwtSkippedBig;
+      void bump() {
+        if (!useSteps || !mounted) return;
+        setState(() => _progress = done / total);
+      }
+
+      done = 1; // 解码完成
+      bump();
 
       // 0) Manual DWT (explicit user intent, e.g. an image embedded on another
       // device): the user provides the exact password + length / logo size.
-      if (!found && canDwt && _extractType != _ExtractType.auto) {
+      if (!found && _extractType != _ExtractType.auto) {
         if (_extractType == _ExtractType.text &&
             manualLen != null && manualLen > 0) {
           if (mounted) {
@@ -225,6 +305,10 @@ class _ExtractPageState extends State<ExtractPage> {
         if (modelsDir == null) {
           // Models missing (corrupted install): skip WAM, still try DWT.
           wamUnavailable = true;
+          if (useSteps) {
+            done += 3; // WAM 步骤视为已消耗（跳过）
+            bump();
+          }
           if (mounted) {
             setState(() => _statusText = '强鲁棒模型不可用，跳过强鲁棒检测…');
           }
@@ -255,24 +339,35 @@ class _ExtractPageState extends State<ExtractPage> {
                 bestBits = bits;
               }
             }
+            if (useSteps) {
+              done++;
+              bump();
+            }
           }
           if (attemptsOk > 0 && bestBits != null) {
-            final code = WamCodec.bitsToStr(bestBits);
-            final match = await WmHistory.matchWam(bestBits, 4);
-            if (match != null) {
-              found = true;
-              if (mounted) {
-                setState(() {
-                  _wamCode = code;
-                  _resultText = match.$1.text ?? '';
-                  _resultNote = '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
-                });
-              }
+            if (bestConf < 2.0) {
+              // 置信度过低 = 图上没有 WAM 水印（实测：水印图 ~8.0 vs
+              // 无水印 ~0.0）。不产出 32 位码，避免 DWT 水印图被误判为
+              // 「仅识别出标识码」而掩盖后续 DWT 提取结果。
             } else {
-              // Code readable on any device, but text recovery needs the
-              // embedder's local history — keep it to show if nothing else
-              // matches.
-              wamCodeOnly = code;
+              final code = WamCodec.bitsToStr(bestBits);
+              final match = await WmHistory.matchWam(bestBits, 4);
+              if (match != null) {
+                found = true;
+                if (mounted) {
+                  setState(() {
+                    _wamCode = code;
+                    _resultText = match.$1.text ?? '';
+                    _resultNote =
+                        '强鲁棒水印 · 匹配到本机记录（${match.$2} 位差异）';
+                  });
+                }
+              } else {
+                // Code readable on any device, but text recovery needs the
+                // embedder's local history — keep it to show if nothing else
+                // matches.
+                wamCodeOnly = code;
+              }
             }
           }
           // NOTE: 解码失败不置 wamUnavailable —— 模型存在且正常，只是图片
@@ -283,12 +378,20 @@ class _ExtractPageState extends State<ExtractPage> {
       // 2) DWT text: try the most recent text records (skip if none).
       // 每个记录按记录中的载体尺寸生成「网格再同步」候选（原图/拉伸/填充），
       // 对齐参考库攻击演示的还原步骤——缩放/裁剪后的图可救回。
-      if (!found &&
-          !dwtSkippedBig &&
-          history.any((e) => e.kind == 'text')) {
+      if (!found && history.any((e) => e.kind == 'text')) {
         if (mounted) setState(() => _statusText = '正在尝试文本水印…');
-        final textRecs =
-            history.where((e) => e.kind == 'text').take(10).toList();
+        // 先容量预筛再截断（避免无效记录挤掉有效记录），尺寸匹配的排最前。
+        final textRecs = rankedBySize(
+            history
+                .where((e) => e.kind == 'text' && capacityOk(e))
+                .take(10)
+                .toList(),
+            bytesSize);
+        if (textRecs.isEmpty) {
+          if (mounted) {
+            setState(() => _statusText = '本机文本记录均不匹配该图片尺寸/容量…');
+          }
+        }
         for (var i = 0; i < textRecs.length && !found; i++) {
           final rec = textRecs[i];
           if (mounted && textRecs.length > 1) {
@@ -298,12 +401,16 @@ class _ExtractPageState extends State<ExtractPage> {
           final len = rec.len;
           if (len == null || len <= 0) continue;
           final candidates = await resyncCandidates(bytes, rec.cw, rec.ch,
-              srcW: bytesSize?.$1, srcH: bytesSize?.$2);
+              srcW: bytesSize.$1, srcH: bytesSize.$2);
           for (final cand in candidates) {
             final result = await compute(
               _extractTextIsolate,
               (cand, len, rec.pw),
             );
+            if (useSteps) {
+              done++;
+              bump();
+            }
             if (result != null && result.isNotEmpty) {
               found = true;
               if (mounted) {
@@ -326,12 +433,20 @@ class _ExtractPageState extends State<ExtractPage> {
       // 正确还原候选信号对齐、偏离大，错误候选网格错位、偏离小。
       // （绝对真假判定不可靠——错误密码/长度提取同样呈混合图案，故只做
       // 候选相对择优，最终展示由用户目视确认，与参考库演示一致。）
-      if (!found &&
-          !dwtSkippedBig &&
-          history.any((e) => e.kind == 'logo')) {
+      if (!found && history.any((e) => e.kind == 'logo')) {
         if (mounted) setState(() => _statusText = '正在尝试 Logo 水印…');
-        final logoRecs =
-            history.where((e) => e.kind == 'logo').take(5).toList();
+        // 同文本：先容量预筛再截断，尺寸匹配的排最前。
+        final logoRecs = rankedBySize(
+            history
+                .where((e) => e.kind == 'logo' && capacityOk(e))
+                .take(5)
+                .toList(),
+            bytesSize);
+        if (logoRecs.isEmpty) {
+          if (mounted) {
+            setState(() => _statusText = '本机 Logo 记录均不匹配该图片尺寸/容量…');
+          }
+        }
         for (var i = 0; i < logoRecs.length && !found; i++) {
           final rec = logoRecs[i];
           if (mounted && logoRecs.length > 1) {
@@ -342,7 +457,7 @@ class _ExtractPageState extends State<ExtractPage> {
           final h = rec.h;
           if (w == null || h == null || w <= 0 || h <= 0) continue;
           final candidates = await resyncCandidates(bytes, rec.cw, rec.ch,
-              srcW: bytesSize?.$1, srcH: bytesSize?.$2);
+              srcW: bytesSize.$1, srcH: bytesSize.$2);
           Uint8List? bestResult;
           var bestDev = 0.0;
           var restored = false;
@@ -352,13 +467,18 @@ class _ExtractPageState extends State<ExtractPage> {
               _extractLogoIsolate,
               (cand, w, h, rec.pw),
             );
-            if (result == null) continue;
-            final dev = await compute(
-                _dwtRawDevIsolate, (cand, w * h, rec.pw));
-            if (dev > bestDev) {
-              bestDev = dev;
-              bestResult = result;
-              restored = ci > 0;
+            if (result != null) {
+              final dev = await compute(
+                  _dwtRawDevIsolate, (cand, w * h, rec.pw));
+              if (dev > bestDev) {
+                bestDev = dev;
+                bestResult = result;
+                restored = ci > 0;
+              }
+            }
+            if (useSteps) {
+              done++;
+              bump();
             }
           }
           if (bestResult != null) {
@@ -389,11 +509,9 @@ class _ExtractPageState extends State<ExtractPage> {
           });
         } else {
           setState(() {
-            _resultNote = dwtSkippedBig
-                ? '图片尺寸过大：文本/Logo 水印需在嵌入时的同尺寸图片上提取，且超大图在本设备上无法安全处理。请使用嵌入后保存的图片（≤1536px）；强鲁棒水印不受此限制。'
-                : wamUnavailable
-                    ? '强鲁棒模型不可用（安装包可能不完整），且未检测到可识别的本机文本/Logo 水印。若这是他人嵌入的图片，请向嵌入方获取密码与长度/尺寸后在「手动提取参数」中填写。'
-                    : '未检测到可识别的本机水印。若这是他人嵌入的图片，请向嵌入方获取密码与长度/尺寸后在「手动提取参数」中填写；强鲁棒标识可在其他设备上识别出 32 位码';
+            _resultNote = wamUnavailable
+                ? '强鲁棒模型不可用（安装包可能不完整），且未检测到可识别的本机文本/Logo 水印。若这是他人嵌入的图片，请向嵌入方获取密码与长度/尺寸后在「手动提取参数」中填写。'
+                : '未检测到可识别的本机水印。若这是他人嵌入的图片，请向嵌入方获取密码与长度/尺寸后在「手动提取参数」中填写；强鲁棒标识可在其他设备上识别出 32 位码';
             _resultText = '';
           });
         }
@@ -405,6 +523,7 @@ class _ExtractPageState extends State<ExtractPage> {
         setState(() {
           _processing = false;
           _statusText = null;
+          _progress = null;
         });
       }
     }
@@ -646,6 +765,19 @@ class _ExtractPageState extends State<ExtractPage> {
               label: Text(_processing ? '正在提取…' : '提取水印'),
             ),
             if (_statusText != null) ...[
+              const SizedBox(height: 12),
+              // 提取进度：auto 模式按步骤确定进度，但用 TweenAnimationBuilder
+              // 插值动画把「跳到下一格」平滑为「连续过渡」，观感如下载进度条；
+              // 解码/手动模式为不确定进度（连续流动）。
+              TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: _progress ?? 0),
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOutCubic,
+                builder: (context, value, _) => LinearProgressIndicator(
+                  value: _progress == null ? null : value,
+                  minHeight: 4,
+                ),
+              ),
               const SizedBox(height: 8),
               // 分步状态提示：文字切换淡入淡出（不跳动）
               AnimatedSwitcher(
