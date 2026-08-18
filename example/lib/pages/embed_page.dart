@@ -476,15 +476,6 @@ class _EmbedPageState extends State<EmbedPage> {
               const SizedBox(height: 8),
             ],
 
-            Text(
-              '文本水印默认强鲁棒，可切换经典 DWT；Logo 水印使用 DWT 方案完整还原',
-              style: TextStyle(
-                color: colorScheme.onSurfaceVariant,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 8),
-
             ExpansionTile(
               tilePadding: EdgeInsets.zero,
               title: const Text('高级选项（可选）'),
