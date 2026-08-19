@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.37] - 2026-08-19
+
+### Fixed
+- **修复 WAM 文本水印被 Logo 阶段截胡**：WAM 匹配命中（conf ≥ 2 + 记录 ≤4 位错）此前仅暂存等待 DWT 兜底 → 若本机有 Logo 记录且图上含真 Logo 信号（dev ~0.5），DWT Logo 阶段会先命中 → 显示 Logo 而非 WAM 文本（用户现象："强鲁棒文本识别不出来、反而识别成 Logo"）。现在 WAM 命中直接展示文本（强信号，DWT 图/无痕图 conf 实测 <1 不会误命中）
+
 ## [1.1.36] - 2026-08-19
 
 ### Fixed

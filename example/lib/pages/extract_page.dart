@@ -239,8 +239,6 @@ class _ExtractPageState extends State<ExtractPage> {
       var found = false;
       var wamUnavailable = false;
       String? wamCodeOnly;
-      // WAM 匹配命中暂存（不阻断 DWT 阶段；DWT 全失败时兜底展示）。
-      (String, WmRecord, int)? wamHit;
       // 手动模式单次提取：不确定进度；auto 模式按「原子步骤」显示确定进度。
       // 原子步骤 = 解码 1 + WAM 每次尝试 + 每个 DWT 还原候选（text/logo）。
       // 候选数按记录载体尺寸与图片尺寸的关系预算（与 resyncCandidates 一致），
@@ -364,11 +362,26 @@ class _ExtractPageState extends State<ExtractPage> {
               final code = WamCodec.bitsToStr(bestBits);
               final match = await WmHistory.matchWam(bestBits, 4);
               if (match != null) {
-                // WAM 命中暂存，不立即 found：WAM 置信度在真实照片上可能
-                // 虚高（DWT 图/无痕图实测 conf 0~0.93，真机照片行为未知），
-                // 误匹配会阻断 DWT 阶段导致 Logo/文本提不出。DWT 优先展示，
-                // WAM 命中仅在 DWT 全失败时兜底显示。
-                wamHit = (code, match.$1, match.$2);
+                // WAM 命中（conf ≥ 2 且记录 ≤4 位错）是强信号，直接展示——
+                // 不再暂存等 DWT 兜底：否则 DWT Logo 阶段会用图上的真 Logo
+                // 信号（dev ~0.5）截胡 WAM 文本，出现「WAM 文本识别不出来、
+                // 反而识别成 Logo」的假象。安全性：DWT 图/无痕图 conf 实测
+                // < 1（阈值 2.0），不会误命中；WAM 匹配需 32 位码 ≤4 位错。
+                final rec = match.$1;
+                final hitText = rec.text;
+                found = true;
+                if (mounted) {
+                  setState(() {
+                    _wamCode = code;
+                    if (hitText != null && hitText.isNotEmpty) {
+                      _resultText = hitText;
+                      _resultNote = '强鲁棒文本水印 · 自动识别';
+                    } else {
+                      _resultText = null;
+                      _resultNote = '强鲁棒水印 · 已识别 32 位标识码';
+                    }
+                  });
+                }
               } else {
                 // Code readable on any device, but text recovery needs the
                 // embedder's local history — keep it to show if nothing else
@@ -512,17 +525,10 @@ class _ExtractPageState extends State<ExtractPage> {
         }
       }
 
-      if (found || wamHit != null) Haptics.success();
+      if (found) Haptics.success();
 
       if (!found && mounted) {
-        if (wamHit != null) {
-          final hit = wamHit;
-          setState(() {
-            _wamCode = hit.$1;
-            _resultText = hit.$2.text ?? '';
-            _resultNote = '强鲁棒水印 · 匹配到本机记录（${hit.$3} 位差异）';
-          });
-        } else if (wamCodeOnly != null) {
+        if (wamCodeOnly != null) {
           setState(() {
             _wamCode = wamCodeOnly;
             _resultText = '';

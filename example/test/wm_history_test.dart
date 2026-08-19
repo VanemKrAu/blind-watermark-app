@@ -88,6 +88,24 @@ void main() {
     expect(match.$2, 0);
   });
 
+  test('matchWam 容错边界：4 位错命中、5 位错拒绝', () async {
+    final code = '11111111111111111111111111111111';
+    await WmHistory.add(wam(code, text: '边界', ts: 1000));
+    List<int> bits(String c) => c.split('').map((e) => e == '1' ? 1 : 0).toList();
+    // 恰 4 位错 → 命中（返回距离 4）
+    final m4 = await WmHistory.matchWam(bits('00001111111111111111111111111111'), 4);
+    expect(m4, isNotNull, reason: '容错上限 4 位应命中');
+    expect(m4!.$2, 4);
+    // 5 位错 → 拒绝（距离 > 容错上限）
+    final m5 = await WmHistory.matchWam(bits('00000111111111111111111111111111'), 4);
+    expect(m5, isNull, reason: '5 位错超出容错 4，不应命中');
+    // 多记录时取距离最小的
+    await WmHistory.add(wam('00000000111111111111111111111111', text: '更近', ts: 2000));
+    final m = await WmHistory.matchWam(bits('00000000001111111111111111111111'), 4);
+    expect(m!.$1.text, '更近', reason: '应选汉明距离最小的记录');
+    expect(m.$2, 2);
+  });
+
   test('removeByKey 删除记录', () async {
     await WmHistory.add(wam('A', ts: 1000));
     await WmHistory.removeByKey('wam:A');
