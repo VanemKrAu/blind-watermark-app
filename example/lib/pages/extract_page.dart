@@ -76,6 +76,13 @@ List<WmRecord> rankedBySize(List<WmRecord> recs, (int, int) srcSize) {
   return out;
 }
 
+/// DWT Logo 提取的「无信号」判定阈值：raw 位值相对 0.5 的平均偏离度
+/// mean|avg-0.5|。实测（1024×768 真实风格图，wmLength 3969）：
+///   真 Logo 水印图 ≈ 0.50；无水印图 ≈ 0.11；WAM 水印图 ≈ 0.10。
+/// dev < 0.25 视为图上没有该 Logo 水印——防止任意图（WAM 文本水印图/
+/// 无水印图）被提取成噪点 Logo 而误判成功（截胡 WAM 结果）。
+const double _logoMinDev = 0.25;
+
 /// 记录 [rec] 在 [srcSize] 图片上的「网格再同步」候选数（与 resyncCandidates
 /// 的生成逻辑一致：尺寸相同/记录尺寸未知 → 1；否则拉伸+等比填充+原大小
 /// 放置 → 4）。用于提取进度条的原子步骤预算。
@@ -477,7 +484,9 @@ class _ExtractPageState extends State<ExtractPage> {
             if (result != null) {
               final dev = await compute(
                   _dwtRawDevIsolate, (cand, w * h, rec.pw));
-              if (dev > bestDev) {
+              // 无信号判定：dev 低于阈值视为图上没有该 Logo 水印
+              // （实测真水印 ~0.50 vs 无水印/WAM 图 ~0.10-0.12）。
+              if (dev >= _logoMinDev && dev > bestDev) {
                 bestDev = dev;
                 bestResult = result;
                 restored = ci > 0;

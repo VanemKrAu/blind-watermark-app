@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.36] - 2026-08-19
+
+### Fixed
+- **修复 WAM 强鲁棒文本水印自动提取被噪点 Logo 截胡**：本机有 Logo 记录时，Logo 阶段对任意图（WAM 文本水印图/无水印图）都提取出噪点图并误判成功（WAM 匹配暂存兜底无机会展示）→ 新增「无信号」判定（raw 位值平均偏离度阈值 0.25：真水印图实测 ~0.50，WAM 图/无水印图 ~0.10-0.12；缩放/裁剪还原/JPEG q70 后 0.36-0.48 不误伤），低于阈值不采信，WAM 结果正常兜底
+- **修复 WAM 嵌入模型损坏（external-data 缺失）**：assets 里的 `wam_embedder.onnx` 是外部数据格式（引用的 `.data` 缺失，ORT 加载必失败 → 所有 WAM 嵌入实际无信号）→ 换成自包含版（5.24MB，权重内嵌，roundtrip 0/32 验证）
+- **修复 WAM 大图提取信号退化**：C++ resize 用 `align_corners=True` + 无抗锯齿，与参考库 torch（`align_corners=False` + `antialias=True`）不一致 → 大图相位漂移 conf 崩溃。改为 torch 精确语义（`src=(dst+0.5)*scale-0.5` + 面积加权抗锯齿放大）→ 1024 图 conf 3.2→6.3，用户 1426×1014 图 conf 3.4（≥阈值 2.0 正常提取）
+- 注：2048+/13MP 大图 WAM 提取弱（conf ~1.2-1.6）为 WAM 模型固有极限（参考库实测同 1.6），非缺陷；此类大图建议 DWT 方案
+
 ## [1.1.35] - 2026-08-18
 
 ### Changed

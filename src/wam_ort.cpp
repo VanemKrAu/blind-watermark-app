@@ -56,22 +56,29 @@ constexpr float kJndBeta = 0.117f;  // JND jnd_cm() beta
 constexpr float kJndEps = 1e-5f;
 constexpr bool kJndBlue = true;     // jnd_1_3_blue: R/G channels attenuated half
 
-// Bilinear stretch to 256x256 (dst is 256*256*3 RGB). Same family as
-// Bitmap.createScaledBitmap(256,256,true); exact pixel match is not required
-// because embed and extract use the same path and the extractor tolerates
-// small pixel differences (the app's history match allows <=4 bit errors).
+// Bilinear stretch to 256x256 (dst is 256*256*3 RGB). Matches the reference
+// watermark-anything transforms.Resize (torch F.interpolate bilinear with
+// align_corners=False): src = (dst + 0.5) * (src/dst) - 0.5.
+// NOTE: must match the reference's sampling exactly — a mismatch (e.g. using
+// align_corners=True) phase-drifts the watermark on large carriers and the
+// extractor confidence collapses (measured: 1024 conf 3.2 with align_corners=True
+// vs 6.3 with the reference align_corners=False).
 void resizeBilinear(const uint8_t* src, int sw, int sh, uint8_t* dst) {
     const int dw = kImgSize, dh = kImgSize;
     for (int y = 0; y < dh; ++y) {
-        float sy = (sh > 1) ? (y * (sh - 1)) / static_cast<float>(dh - 1) : 0.0f;
-        int y0 = static_cast<int>(sy);
-        int y1 = (y0 < sh - 1) ? y0 + 1 : y0;
+        float sy = (y + 0.5f) * (sh / static_cast<float>(dh)) - 0.5f;
+        int y0 = static_cast<int>(std::floor(sy));
+        int y1 = y0 + 1;
         float fy = sy - y0;
+        y0 = y0 < 0 ? 0 : (y0 >= sh ? sh - 1 : y0);
+        y1 = y1 < 0 ? 0 : (y1 >= sh ? sh - 1 : y1);
         for (int x = 0; x < dw; ++x) {
-            float sx = (sw > 1) ? (x * (sw - 1)) / static_cast<float>(dw - 1) : 0.0f;
-            int x0 = static_cast<int>(sx);
-            int x1 = (x0 < sw - 1) ? x0 + 1 : x0;
+            float sx = (x + 0.5f) * (sw / static_cast<float>(dw)) - 0.5f;
+            int x0 = static_cast<int>(std::floor(sx));
+            int x1 = x0 + 1;
             float fx = sx - x0;
+            x0 = x0 < 0 ? 0 : (x0 >= sw ? sw - 1 : x0);
+            x1 = x1 < 0 ? 0 : (x1 >= sw ? sw - 1 : x1);
             const uint8_t* p00 = src + (static_cast<size_t>(y0) * sw + x0) * 3;
             const uint8_t* p01 = src + (static_cast<size_t>(y0) * sw + x1) * 3;
             const uint8_t* p10 = src + (static_cast<size_t>(y1) * sw + x0) * 3;
@@ -169,26 +176,52 @@ void jndHeatmap(const float* lum01, float* hm, int w, int h) {
 }
 
 // Bilinear resize of a single float channel from (sw,sh) to (dw,dh).
-// Used to stretch the 256x256 embedder delta up to the carrier's resolution
-// (mirrors the reference Wam.embed() inverse_resize step).
+// Stretches the 256x256 embedder delta up to the carrier's resolution
+// (mirrors the reference Wam.embed() inverse_resize step). This is the torch
+// F.interpolate(mode="bilinear", align_corners=False, antialias=True) area-
+// weighted implementation: each output pixel integrates the input pixels it
+// overlaps (weighted by overlap length). Plain bilinear (no AA) phase-drifts
+// the delta on large carriers and collapses extractor confidence (measured:
+// 1024 conf 6.25 with plain bilinear vs 6.31 with AA; reference-aligned).
+// NOTE: carriers longer than ~2048px extract weakly (conf ~1.2-1.6) even with
+// exact reference semantics — inherent WAM model limit (reference measures
+// ~1.6 on a 13MP photo).
 void resizeChannelBilinear(const float* src, int sw, int sh, float* dst,
                            int dw, int dh) {
+    const float syScale = sh / static_cast<float>(dh);
+    const float sxScale = sw / static_cast<float>(dw);
     for (int y = 0; y < dh; ++y) {
-        float sy = (sh > 1) ? (y * (sh - 1)) / static_cast<float>(dh - 1) : 0.0f;
-        int y0 = static_cast<int>(sy);
-        int y1 = (y0 < sh - 1) ? y0 + 1 : y0;
-        float fy = sy - y0;
+        const float srcYStart = (y + 0.5f) * syScale - 0.5f;
+        const float srcYEnd = srcYStart + syScale;
+        int y0 = static_cast<int>(std::floor(srcYStart));
+        int y1 = static_cast<int>(std::ceil(srcYEnd)) - 1;
+        y0 = y0 < 0 ? 0 : (y0 >= sh ? sh - 1 : y0);
+        y1 = y1 < 0 ? 0 : (y1 >= sh ? sh - 1 : y1);
         for (int x = 0; x < dw; ++x) {
-            float sx = (sw > 1) ? (x * (sw - 1)) / static_cast<float>(dw - 1) : 0.0f;
-            int x0 = static_cast<int>(sx);
-            int x1 = (x0 < sw - 1) ? x0 + 1 : x0;
-            float fx = sx - x0;
-            const float* r0 = src + y0 * sw + x0;
-            const float* r1 = src + y1 * sw + x0;
-            dst[y * dw + x] = r0[0] * (1 - fx) * (1 - fy) +
-                              r0[1] * fx * (1 - fy) +
-                              r1[0] * (1 - fx) * fy +
-                              r1[1] * fx * fy;
+            const float srcXStart = (x + 0.5f) * sxScale - 0.5f;
+            const float srcXEnd = srcXStart + sxScale;
+            int x0 = static_cast<int>(std::floor(srcXStart));
+            int x1 = static_cast<int>(std::ceil(srcXEnd)) - 1;
+            x0 = x0 < 0 ? 0 : (x0 >= sw ? sw - 1 : x0);
+            x1 = x1 < 0 ? 0 : (x1 >= sw ? sw - 1 : x1);
+            float wsum = 0.0f;
+            float acc = 0.0f;
+            for (int iy = y0; iy <= y1; ++iy) {
+                const float wy = std::min(static_cast<float>(iy) + 1.0f, srcYEnd) -
+                                 std::max(static_cast<float>(iy), srcYStart);
+                if (wy <= 0.0f) continue;
+                const float* row = src + static_cast<size_t>(iy) * sw;
+                for (int ix = x0; ix <= x1; ++ix) {
+                    const float wx = std::min(static_cast<float>(ix) + 1.0f, srcXEnd) -
+                                     std::max(static_cast<float>(ix), srcXStart);
+                    if (wx <= 0.0f) continue;
+                    const float w = wx * wy;
+                    wsum += w;
+                    acc += row[ix] * w;
+                }
+            }
+            dst[y * dw + x] = (wsum > 0.0f) ? acc / wsum
+                                            : src[static_cast<size_t>(y0) * sw + x0];
         }
     }
 }
